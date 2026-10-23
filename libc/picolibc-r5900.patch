@@ -1,0 +1,21 @@
+diff --git a/newlib/libc/machine/mips/setjmp.S b/newlib/libc/machine/mips/setjmp.S
+index f1f948f..054cee2 100644
+--- a/newlib/libc/machine/mips/setjmp.S
++++ b/newlib/libc/machine/mips/setjmp.S
+@@ -118,9 +118,15 @@ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ #ifdef __mips64
+ #define BYTES_PER_WORD 8
+ #define LOAD_GPR ld
+-#define LOAD_FPR ldc1
+ #define STORE_GPR sd
++#ifdef __mips_single_float
++/* a single-precision FPU (e.g. the R5900): 32-bit FPRs only */
++#define LOAD_FPR lwc1
++#define STORE_FPR swc1
++#else
++#define LOAD_FPR ldc1
+ #define STORE_FPR sdc1
++#endif
+ #else
+ #define LOAD_GPR lw
+ #define STORE_GPR sw

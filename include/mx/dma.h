@@ -82,8 +82,9 @@ void mx_dma_stall(int src, int drain, const void *start);
 
 /* Ring buffer in main memory between fromSPR (the source) and VIF1 or GIF
    (the drain). size is a power of two in bytes, ring is aligned to it. The
-   drain is started and then holds while the ring is empty. */
-void mx_mfifo_init(int drain_ch, void *ring, u32 size);
+   drain is started and then holds while the ring is empty. tte: the drain
+   (VIF1) also sends the VIF codes in the upper half of each tag. */
+void mx_mfifo_init(int drain_ch, void *ring, u32 size, int tte);
 /* Copy qwc quadwords from the scratchpad into the ring (fromSPR). They must
    be whole drain packets: cnt/ref/end tags with their data. Waits for space,
    and returns while the copy runs: the SPR source must not be changed before
@@ -119,6 +120,10 @@ struct mx_dmaq {
   volatile int running;
   struct mx_dma_seg seg[MX_DMAQ_LEN];
   u32 t_last_end; /* Count at the last end interrupt */
+  /* a thread sleeping in mx_event_sleep (<mx/thread.h>) */
+  volatile int sleep_sema; /* semaphore to signal, -1: nobody sleeps */
+  volatile u32 sleep_seq;
+  int sema;                /* the queue's semaphore, -1 until first needed */
 };
 
 /* Take over channel ch: its end interrupt starts the next queued segment. */

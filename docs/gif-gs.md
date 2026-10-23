@@ -16,3 +16,16 @@
 
 Consequence: the checked packet builder costs ~25 cycles per quadword, 5–6x the DMA cost of the
 same data; hot loops should use the cursor emitters (D5a) or constant packets.
+
+## Phases 5-6 (PS2, 2026-10-23)
+
+| Fact | Value | Conditions | Source | Date |
+|---|---|---|---|---|
+| Cursor emitters (`<mx/emit.h>`, two `sd` per quadword), 100 A+D into SPR | 2.63 cycles/qw (checked builder 23.1) | | `probe/p5_fast.c` | 2026-10-23 |
+| The same with `pcpyld` + `sq` (inline asm) | 5.08 cycles/qw: slower than two `sd` | | `probe/p5_fast.c` | 2026-10-23 |
+| Emitters, 150 PACKED RGBAQ + XYZ2 vertices into SPR | 3.16 cycles/qw (checked builder 34.8) | | `probe/p5_fast.c` | 2026-10-23 |
+| GS LABEL, GIF DMA start until the EE sees it (polled SIGLBLID) | 236 / 323 cycles | 2-qw A+D packet | `probe/p5_fast.c` | 2026-10-23 |
+| A second SIGNAL while CSR.SIGNAL is still set **stops the GS** (the LABEL after it is not written); writing CSR.SIGNAL lets it go on, 208 cycles to the LABEL | | GS interrupts masked | `probe/p5_fast.c` | 2026-10-23 |
+| spin on the frame pipeline: 120 frames in 119 vsyncs, no missed vblank (the phase 3 synchronous loop: 146 vsyncs) | | | `demos/spin.c` | 2026-10-23 |
+| scene, 64 textured lit cubes + a 64x64 texture streamed every frame: 240 frames in 239 vsyncs, missed 0; EE builds a frame in 70 k cycles | | | `demos/scene.c` | 2026-10-23 |
+| scene without vsync, 256 cubes (3072 triangles): VU1 batches double buffered **440 k cycles/frame**, a FLUSHE after every batch 581 k: double buffering saves 24 % on the render path | | | `demos/scene.c` | 2026-10-23 |

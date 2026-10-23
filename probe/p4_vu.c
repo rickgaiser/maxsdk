@@ -32,7 +32,7 @@ static void report(const char *name, u32 *v, int n, const char *unit) {
 }
 
 static struct mx_kernel dbl(int vu) {
-  struct mx_kernel k = {vu, dbl_vu, (u32)(dbl_vu_end - dbl_vu), 0, 1, 0, 1, 1, 0};
+  struct mx_kernel k = {vu, dbl_vu, (u32)(dbl_vu_end - dbl_vu), 0, 1, 0, 1, 1, 0, 0};
   return k;
 }
 
@@ -69,7 +69,7 @@ static void dbuf_throughput(void) {
       struct mx_kernel k = {vu, db ? (vu ? dbl1db_vu : dbl0db_vu) : dbl_vu,
                             (u32)(db ? (vu ? dbl1db_vu_end - dbl1db_vu : dbl0db_vu_end - dbl0db_vu)
                                      : dbl_vu_end - dbl_vu),
-                            0, 1, 0, 1, 1, db};
+                            0, 1, 0, 1, 1, db, 0};
       mx_vu_forget(vu);
       mx_vu_load(vu, k.code, k.code_bytes, 0);
       static struct mx_vuq q;
@@ -300,7 +300,7 @@ static void mpg_cost(void) {
     mx_vu_load(1, code, sizeof code, 1024);
     v[r] = (mx_count() - t0) * 100 / 1024;
   }
-  report("vu1: MPG upload of 1024 instructions (incl. build)", v, REPS, "cycles/100 instr");
+  report("vu1: MPG upload of 1024 instructions (ref tags)", v, REPS, "cycles/100 instr");
 }
 
 int main(void) {

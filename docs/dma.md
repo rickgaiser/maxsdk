@@ -19,8 +19,41 @@
 | VU1 per batch in the ps2sdk vudemo: sending by DMA | ~2400 EE cycles per batch | REF chain, UNPACK, MSCAL, FLUSHE | `bench/vudemo` | 2026-10-23 |
 | Stall control, fromSPR (source) → VIF1 (drain) with a `refs` packet on a chain drain: the drain waits for the source | works | | `tests/ps2/dma.c` | 2026-10-23 |
 
+## Design facts from phases 5-7 (from the manual, checked on PCSX2)
+
+* In MFIFO mode fromSPR is the ring's source and its MADR is the ring's write pointer. Any other
+  fromSPR transfer (e.g. the DMA readback of VU memory, toSPR + fromSPR) moves that pointer and
+  breaks the ring: `demos/allunits.c` hung on PCSX2 until the readback copied from the scratchpad
+  with the EE instead while the MFIFO runs (`src/vu/vu.c` read_dma).
+* An MFIFO drain (VIF1) in source chain mode with TTE reads `ref` tags that point outside the ring
+  (vertex arrays in memory) and sends the VIF codes in each tag: the frame pipeline relies on both
+  (`tests/ps2/frame.c`, PCSX2; PS2 pending).
+* MPG from `ref` tags straight to the code (`mx_vu_load`, `mx_vu_mpg_tags`): the MPG code sits in
+  the tag's upper word, so the instructions start on a quadword; an odd last instruction goes in a
+  `cnt` packet padded with VIF NOPs (`tests/ps2/vu.c` mpg_big: 601 instructions, PCSX2).
+
 ## Not measured yet
+
+* Channel priorities (D_PCR) beyond the three-channel run above.
 
 * Stall control with a normal-mode drain on the PS2 (PCSX2 does not stall it).
 * Channel priorities (D_PCR) and cycle stealing (D_CTRL.RELE) under load.
 * Fence methods other than the per-segment interrupt (VIF MARK, a DMA write into SPR).
+
+## Phase 5 (PS2, 2026-10-23)
+
+| Fact | Value | Conditions | Source | Date |
+|---|---|---|---|---|
+| VIF1 1-qw chain, DMA start until the EE knows it is done: DMA end interrupt (mx_dmaq) | 751 / 763 cycles | | `probe/p5_fast.c` | 2026-10-23 |
+| … polled VIF1 MARK | **100** cycles | | `probe/p5_fast.c` | 2026-10-23 |
+| 64 batches of 16 qw: a queue segment (interrupt) per batch | 561 cycles/batch | | `probe/p5_fast.c` | 2026-10-23 |
+| … one chain, a MARK per batch, polled | **121** cycles/batch | | `probe/p5_fast.c` | 2026-10-23 |
+| MPG of 1024 instructions by ref tags to the code (`mx_vu_load`) | 3.10 cycles/instruction (copying builder: 25) | | `probe/p4_vu.c` | 2026-10-23 |
+| Stall control with the drain (VIF1) in **normal** mode: the drain waits for the source; data correct (PCSX2 does not stall it) | | | `probe/p5_fast.c` | 2026-10-23 |
+| 2048 uncached EE stores alone / while VIF1 reads 16 KiB from memory | 12.9 k / 18.1 k cycles; **VIF1 slows from 4.5 k to 18.2 k cycles** | D_CTRL.RELE off | `probe/p5_fast.c` | 2026-10-23 |
+| … with RELE (release every 8 / 64 cycles) | 18.1 k / 17.7 k: cycle stealing barely changes it | | `probe/p5_fast.c` | 2026-10-23 |
+| toSPR 16 KiB, VIF1 16 KiB, GIF 64 KiB IMAGE started together (end times) vs alone | toSPR 2.77 k (2.61 k), VIF1 9.73 k (4.53 k), GIF 23.3 k (19.7 k) | | `probe/p5_fast.c` | 2026-10-23 |
+
+Consequences: poll the VIF MARK to wait for a batch (D13); put many batches in one chain
+with a MARK each instead of a queue segment per batch; the EE's uncached stores and VIF1 DMA from
+memory slow each other a lot, so build packets in SPR, not uncached memory, while DMA runs.

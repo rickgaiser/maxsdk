@@ -2,7 +2,10 @@
    these functions. */
 #include <mx/string.h>
 
-void *memcpy(void *d, const void *s, size_t n) {
+/* Weak: with a C library linked (libmxc + picolibc), its versions win. */
+#define MX_WEAK __attribute__((weak))
+
+MX_WEAK void *memcpy(void *d, const void *s, size_t n) {
   u8 *dp = d;
   const u8 *sp = s;
   if ((((uintptr_t)dp | (uintptr_t)sp) & 15) == 0) {
@@ -17,7 +20,7 @@ void *memcpy(void *d, const void *s, size_t n) {
   return d;
 }
 
-void *memmove(void *d, const void *s, size_t n) {
+MX_WEAK void *memmove(void *d, const void *s, size_t n) {
   u8 *dp = d;
   const u8 *sp = s;
   if (dp <= sp || dp >= sp + n)
@@ -27,7 +30,7 @@ void *memmove(void *d, const void *s, size_t n) {
   return d;
 }
 
-void *memset(void *d, int c, size_t n) {
+MX_WEAK void *memset(void *d, int c, size_t n) {
   u8 *dp = d;
   if (((uintptr_t)dp & 15) == 0 && n >= 16) {
     u32 w = (u8)c * 0x01010101u;
@@ -51,7 +54,7 @@ void *memset(void *d, int c, size_t n) {
   return d;
 }
 
-int memcmp(const void *a, const void *b, size_t n) {
+MX_WEAK int memcmp(const void *a, const void *b, size_t n) {
   const u8 *x = a, *y = b;
   for (; n; n--, x++, y++)
     if (*x != *y)
@@ -59,20 +62,20 @@ int memcmp(const void *a, const void *b, size_t n) {
   return 0;
 }
 
-size_t strlen(const char *s) {
+MX_WEAK size_t strlen(const char *s) {
   const volatile char *p = s;
   while (*p)
     p++;
   return (size_t)(p - s);
 }
 
-int strcmp(const char *a, const char *b) {
+MX_WEAK int strcmp(const char *a, const char *b) {
   while (*a && *a == *b)
     a++, b++;
   return (u8)*a - (u8)*b;
 }
 
-int strncmp(const char *a, const char *b, size_t n) {
+MX_WEAK int strncmp(const char *a, const char *b, size_t n) {
   for (; n; n--, a++, b++) {
     if (*a != *b)
       return (u8)*a - (u8)*b;
@@ -82,7 +85,7 @@ int strncmp(const char *a, const char *b, size_t n) {
   return 0;
 }
 
-char *strcpy(char *d, const char *s) {
+MX_WEAK char *strcpy(char *d, const char *s) {
   char *r = d;
   while ((*d++ = *s++))
     ;

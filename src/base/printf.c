@@ -1,6 +1,6 @@
 /* Small printf: %d %i %u %x %X %o %p %s %c %f %e %g %%, with flags - 0 + space,
    width, precision (also *), and the length modifiers hh h l ll z. It uses no
-   floating-point arithmetic and no libgcc, so it links with any compiler. */
+   floating-point arithmetic and no compiler runtime. */
 
 #include <mx/debug.h>
 #include <mx/string.h>

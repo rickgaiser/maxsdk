@@ -46,18 +46,30 @@ void mx_vu0_wait(void);
 void mx_vu1_read(void *dst, u32 addr, u32 qwc);
 /* The same by DMA: toSPR from VU1 memory into the scratchpad buffer spr
    (bytes long), then fromSPR to dst, in pieces. ~5.5 instead of ~26 EE
-   cycles per quadword (docs/vu1.md). dst is invalidated if cached. */
+   cycles per quadword (docs/vu1.md). dst is invalidated if cached. While
+   the MFIFO runs (it owns fromSPR), the EE copies from the scratchpad. */
 void mx_vu1_read_dma(void *dst, u32 addr, u32 qwc, void *spr, u32 bytes);
+/* The same for VU0 data memory (VU0 stopped). Touches no VU0 register. */
+void mx_vu0_read_dma(void *dst, u32 addr, u32 qwc, void *spr, u32 bytes);
 
 /* ---- microcode ------------------------------------------------------------ */
 
 /* Upload code (bytes, 8 per instruction) to micro memory addr (64-bit units)
-   of vu, unless it is already there. VU1: MPG through VIF1. VU0: MPG
-   through VIF0 (dma = 1) or 128-bit writes to the mapped micro memory
-   (dma = 0; VU0 must be stopped). Returns 1 if it was uploaded. */
+   of vu, unless it is already there, by MPG through VIF0/VIF1. 16-byte
+   aligned code (.vutext) is sent where it is by ref tags, so it must be in
+   memory, not only in the cache (startup flushes the cache); other code is
+   copied into a packet. Returns 1 if it was uploaded, -1 on error. */
 int mx_vu_load(int vu, const void *code, u32 bytes, u32 addr);
+/* The same upload as DMA tags for a VIF chain with TTE (for example an
+   MFIFO stream): ref tags to the code, 256 instructions each, and an odd
+   last instruction in a cnt packet. code must be 16-byte aligned and in
+   memory. Writes at most bytes / 2048 + 3 quadwords; returns the cursor. */
+u64 *mx_vu_mpg_tags(u64 *c, const void *code, u32 bytes, u32 addr);
 /* Forget what is resident (after a reset or a foreign upload). */
 void mx_vu_forget(int vu);
+/* Residency for uploads made outside mx_vu_load (mx_vu_mpg_tags). */
+int mx_vu_resident(int vu, const void *code, u32 bytes, u32 addr);
+void mx_vu_mark_resident(int vu, const void *code, u32 bytes, u32 addr);
 
 /* ---- kernels and batches ------------------------------------------------ */
 
@@ -86,13 +98,17 @@ struct mx_kernel {
   u32 data_qw;  /* first item */
   u32 item_qw;  /* quadwords per item */
   int dbuf;     /* double buffered (see above) */
+  u32 out_qw;   /* output quadwords per item after the items (0: in place) */
 };
 
-/* A kernel from a vuk -H header (VUK_<NAME>_N, _X, _SIZE). */
+/* A kernel from a vuk -H header: the layout (VUK_<NAME>_N, _X, _SIZE) and
+   how to launch it (_ENTRY, _ITEM_QW, _DBUF). Items are sent as UNPACK
+   V4-32, the only format the queues use (_FORMAT 0x0C). */
 #define MX_VUK_KERNEL(NAME, vu_, code_, code_end_)                                         \
   ((struct mx_kernel){.vu = (vu_), .code = (code_), .code_bytes = (u32)((code_end_) - (code_)), \
-                      .entry = 0, .hdr_qw = VUK_##NAME##_SIZE, .count_qw = VUK_##NAME##_N,  \
-                      .data_qw = VUK_##NAME##_X, .item_qw = 1})
+                      .entry = VUK_##NAME##_ENTRY, .hdr_qw = VUK_##NAME##_SIZE,             \
+                      .count_qw = VUK_##NAME##_N, .data_qw = VUK_##NAME##_X,                \
+                      .item_qw = VUK_##NAME##_ITEM_QW, .dbuf = VUK_##NAME##_DBUF})
 
 /* Items per batch that fit the data memory of the kernel's VU (VU0 4 KiB,
    VU1 16 KiB), per buffer for double-buffered kernels. */
@@ -145,10 +161,14 @@ mx_event mx_vuq_batch(struct mx_vuq *q, const struct mx_kernel *k, const void *h
    double-buffered kernel the next batch may already run). Returns 0, or -1
    after a second. */
 int mx_vuq_wait(struct mx_vuq *q, mx_event e);
+/* Without waiting: 1 if the batch's program has ended (single-buffered
+   batches; mx_vuq_wait then returns at once), 0 if not, -1 for double-
+   buffered batches (use mx_vuq_wait). */
+int mx_vuq_done(struct mx_vuq *q, mx_event e);
 /* Read n items of results of the batch last passed to mx_vuq_wait. */
 void mx_vuq_read(struct mx_vuq *q, const struct mx_kernel *k, void *dst, u32 n);
-/* VU1 queues: read results back by DMA through this scratchpad buffer
-   (spr = 0: mapped reads, the default). */
+/* Read results back by DMA through this scratchpad buffer (VU1 and VU0
+   queues; spr = 0: mapped or COP2 reads, the default). */
 void mx_vuq_readback_spr(struct mx_vuq *q, void *spr, u32 bytes);
 
 #endif

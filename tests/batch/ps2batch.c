@@ -8,10 +8,15 @@ int dma_main(void);
 int gs_main(void);
 int vif_main(void);
 int vu_main(void);
+int frame_main(void);
 int p2_dma_main(void);
 int p3_gs_main(void);
 int p4_vu_main(void);
+int p5_fast_main(void);
 int spin_main(void);
+int scene_main(void);
+int allunits_main(void);
+int thread_main(void);
 int dbit_main(void);
 
 static const struct {
@@ -19,8 +24,10 @@ static const struct {
   int (*run)(void);
 } parts[] = {
     {"dma", dma_main},       {"gs", gs_main},         {"vif", vif_main},
-    {"vu", vu_main},         {"p2_dma", p2_dma_main}, {"p3_gs", p3_gs_main},
-    {"p4_vu", p4_vu_main},   {"spin", spin_main},
+    {"vu", vu_main},         {"frame", frame_main},   {"p2_dma", p2_dma_main},
+    {"p3_gs", p3_gs_main},   {"p4_vu", p4_vu_main},   {"p5_fast", p5_fast_main},
+    {"spin", spin_main},     {"scene", scene_main},   {"allunits", allunits_main},
+    {"thread", thread_main},
     /* last: an earlier version of the D-bit check hung the PS2 */
     {"dbit", dbit_main},
 };

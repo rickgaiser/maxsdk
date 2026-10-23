@@ -1,0 +1,17 @@
+# meson cross file for picolibc on the R5900 (EE), n32, clang. @LLVM@ is
+# replaced by the LLVM bin directory (Makefile, target libc).
+[binaries]
+c = ['@LLVM@/clang', '--target=mips64el', '-mcpu=r5900', '-mabi=n32', '-fno-pic', '-mno-abicalls', '-G0', '-nostdlib']
+cpp = ['@LLVM@/clang++', '--target=mips64el', '-mcpu=r5900', '-mabi=n32', '-fno-pic', '-mno-abicalls', '-G0', '-nostdlib']
+ar = '@LLVM@/llvm-ar'
+nm = '@LLVM@/llvm-nm'
+strip = '@LLVM@/llvm-strip'
+
+[host_machine]
+system = 'none'
+cpu_family = 'mips64'
+cpu = 'r5900'
+endian = 'little'
+
+[properties]
+skip_sanity_check = true

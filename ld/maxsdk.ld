@@ -1,4 +1,4 @@
-/* Linker script for maxsdk EE programs (GNU ld and lld). */
+/* Linker script for maxsdk EE programs (lld). */
 
 OUTPUT_ARCH(mips)
 ENTRY(__start)

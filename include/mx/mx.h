@@ -8,13 +8,17 @@
 #include <mx/cpu.h>
 #include <mx/debug.h>
 #include <mx/dma.h>
+#include <mx/emit.h>
+#include <mx/frame.h>
 #include <mx/gif.h>
 #include <mx/gs.h>
 #include <mx/hw/formats.h>
 #include <mx/hw/regs.h>
 #include <mx/irq.h>
 #include <mx/pkt.h>
+#include <mx/sched.h>
 #include <mx/string.h>
+#include <mx/thread.h>
 #include <mx/timer.h>
 #include <mx/trace.h>
 #include <mx/types.h>

@@ -6,7 +6,7 @@
 
 typedef uint8_t u8;
 typedef uint16_t u16;
-typedef unsigned int u32; /* not uint32_t: that is long on the EE gcc */
+typedef unsigned int u32;
 typedef uint64_t u64;
 typedef int8_t s8;
 typedef int16_t s16;

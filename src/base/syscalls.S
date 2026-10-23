@@ -179,6 +179,17 @@ mx_bios_create_thread:
 	.end mx_bios_create_thread
 	.size mx_bios_create_thread, .-mx_bios_create_thread
 
+	.globl mx_bios_delete_thread
+	.type mx_bios_delete_thread, @function
+	.ent mx_bios_delete_thread
+mx_bios_delete_thread:
+	li $3, 33
+	syscall
+	jr $31
+	nop
+	.end mx_bios_delete_thread
+	.size mx_bios_delete_thread, .-mx_bios_delete_thread
+
 	.globl mx_bios_start_thread
 	.type mx_bios_start_thread, @function
 	.ent mx_bios_start_thread
@@ -201,6 +212,39 @@ mx_bios_exit_thread:
 	.end mx_bios_exit_thread
 	.size mx_bios_exit_thread, .-mx_bios_exit_thread
 
+	.globl mx_bios_terminate_thread
+	.type mx_bios_terminate_thread, @function
+	.ent mx_bios_terminate_thread
+mx_bios_terminate_thread:
+	li $3, 37
+	syscall
+	jr $31
+	nop
+	.end mx_bios_terminate_thread
+	.size mx_bios_terminate_thread, .-mx_bios_terminate_thread
+
+	.globl mx_bios_change_thread_priority
+	.type mx_bios_change_thread_priority, @function
+	.ent mx_bios_change_thread_priority
+mx_bios_change_thread_priority:
+	li $3, 41
+	syscall
+	jr $31
+	nop
+	.end mx_bios_change_thread_priority
+	.size mx_bios_change_thread_priority, .-mx_bios_change_thread_priority
+
+	.globl mx_bios_rotate_thread_ready_queue
+	.type mx_bios_rotate_thread_ready_queue, @function
+	.ent mx_bios_rotate_thread_ready_queue
+mx_bios_rotate_thread_ready_queue:
+	li $3, 43
+	syscall
+	jr $31
+	nop
+	.end mx_bios_rotate_thread_ready_queue
+	.size mx_bios_rotate_thread_ready_queue, .-mx_bios_rotate_thread_ready_queue
+
 	.globl mx_bios_get_thread_id
 	.type mx_bios_get_thread_id, @function
 	.ent mx_bios_get_thread_id
@@ -211,6 +255,17 @@ mx_bios_get_thread_id:
 	nop
 	.end mx_bios_get_thread_id
 	.size mx_bios_get_thread_id, .-mx_bios_get_thread_id
+
+	.globl mx_bios_refer_thread_status
+	.type mx_bios_refer_thread_status, @function
+	.ent mx_bios_refer_thread_status
+mx_bios_refer_thread_status:
+	li $3, 48
+	syscall
+	jr $31
+	nop
+	.end mx_bios_refer_thread_status
+	.size mx_bios_refer_thread_status, .-mx_bios_refer_thread_status
 
 	.globl mx_bios_sleep_thread
 	.type mx_bios_sleep_thread, @function

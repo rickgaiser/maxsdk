@@ -63,3 +63,12 @@ void mx_debug_write(const char *s, u32 n) {
   for (u32 i = 0; i < n; i++)
     hold_buf[hold_len++] = s[i];
 }
+
+void mx_exit(int status) __attribute__((noreturn));
+
+/* MX_E_CHECK (<mx/emit.h>) in MX_DEBUG builds */
+void mx__emit_overflow(const char *file, int line) {
+  mx_debug_hold(0);
+  mx_printf("emit: buffer overflow at %s:%d\n", file, line);
+  mx_exit(99);
+}

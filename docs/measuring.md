@@ -15,3 +15,8 @@
   one segment's end interrupt to the next segment's first transfer.
 * **Disturbances:** SIF DMA (debug output), the BIOS's own interrupt handlers (vsync, timers) and
   cache state. Report minimum and median of repeated runs.
+* **Unit state sampling (phase 5):** `mx_trace_sample(hz)` reads every unit's busy state from
+  timer 1 (DMA CHCR.STR of VIF0/VIF1/GIF/fromSPR/toSPR, VPU-STAT VBS0/VBS1, GIF_STAT.APATH, GS
+  CSR.FIFO) and counts it; `mx_trace_busy()` gives the counts, `tools/trace.py` the shares from a
+  trace. An MFIFO drain keeps STR set while it waits on an empty ring, so it counts as busy only
+  while the ring holds data. The cost per sample is measured by `probe/p5_fast.c` (pending, PS2).

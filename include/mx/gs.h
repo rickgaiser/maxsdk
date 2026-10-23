@@ -22,6 +22,10 @@ struct mx_gs {
   volatile u32 frames_done; /* frames whose FINISH arrived */
   volatile u32 last_sigid;
   volatile u32 shown_fbp; /* DISPFB2.FBP last written (the register is write-only) */
+  /* vblanks without a new frame to show: */
+  volatile u32 missed;    /* a frame was submitted but its FINISH had not come (GS late) */
+  volatile u32 starved;   /* no frame was submitted (EE late) */
+  volatile int counting;  /* count missed/starved vblanks (between the first and last frame) */
 };
 
 extern struct mx_gs mx_gs;
@@ -65,6 +69,44 @@ void mx_gs_wait_vsync(void);
    The vblank handler shows the newest finished frame. */
 int mx_gs_frame_begin(void);
 void mx_gs_frame_submit(const void *chain);
+
+/* The same as mx_gs_draw_env / mx_gs_clear with cursor emitters
+   (<mx/emit.h>): 9 and 5 quadwords, GIF tags included. eop: the last
+   GIF packet. */
+u64 *mx_gs_e_draw_env(u64 *c, int buf, int eop);
+u64 *mx_gs_e_clear(u64 *c, u32 r, u32 g, u32 b, int eop);
+
+/* A cache of GS register values written by A+D, so a register is only
+   written when its value changes. PRIM is not cached (GIF tags set it). */
+struct mx_gs_regs {
+  u64 v[0x64];
+  u8 valid[0x64];
+};
+MX_INLINE void mx_gs_regs_reset(struct mx_gs_regs *r) {
+  for (int i = 0; i < 0x64; i++)
+    r->valid[i] = 0;
+}
+/* Append an A+D write of reg = v at c unless the cache has it. */
+MX_INLINE u64 *mx_gs_e_reg(u64 *c, struct mx_gs_regs *r, u32 reg, u64 v) {
+  if (r->valid[reg] && r->v[reg] == v)
+    return c;
+  r->valid[reg] = 1;
+  r->v[reg] = v;
+  c[0] = v; /* plain stores: c is read back by mx_gs_e_regs_close */
+  c[1] = reg;
+  return c + 2;
+}
+/* Start / close a run of mx_gs_e_reg: the tag gets the number of writes
+   that were not skipped; with none, the tag is dropped (returns tag). */
+MX_INLINE u64 *mx_gs_e_regs_begin(u64 *tag) { return tag + 2; }
+MX_INLINE u64 *mx_gs_e_regs_close(u64 *tag, u64 *c, int eop) {
+  u32 n = (u32)(c - tag) / 2 - 1;
+  if (!n)
+    return tag;
+  tag[0] = mx_giftag(n, eop, -1, MX_GIF_FLG_PACKED, 1);
+  tag[1] = MX_GIF_REG_AD;
+  return c;
+}
 
 /* Local -> host readback of w x h pixels of a 32-bit buffer at (x, y) into
    dst. bp is in 64-word blocks (BITBLTBUF units; a framebuffer page is 32

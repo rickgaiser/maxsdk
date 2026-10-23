@@ -32,3 +32,11 @@
 | The assembler rejects `lqc2`/`sqc2`/`vcallms`/`cfc2.i` without `-mvu0`; they are encoded as `.word` (vcallms 0x4a000038, cfc2.i 0x4848e801) | | `bench/vudemo/vu.h` | 2026-10-23 |
 
 Micro-mode instruction latencies are not measured yet; the VU target's model uses the manual's.
+
+## Phase 5 (PS2, 2026-10-23)
+
+| Fact | Value | Source | Date |
+|---|---|---|---|
+| VU0 doubling kernel through VIF0, readback by COP2 vs by toSPR DMA from VU0 memory (`mx_vu0_read_dma`), batches of 240 | 29.8 vs 27.9 cycles/qw | `probe/p5_fast.c` | 2026-10-23 |
+| vudemo, VU0 results read back by DMA too, all three units | 30.88 cycles/qw (30.39 / 31.00 before) | `bench/vudemo` | 2026-10-23 |
+| vudemo through mx_sched (one pool: VU0 batches of 240, VU1 of 240, FPU chunks of 8): VU0 1200, VU1 1224, FPU 120 qw | **27.32 cycles/qw** (static schedule 30.88) | `bench/vudemo` MODE_SCHED | 2026-10-23 |

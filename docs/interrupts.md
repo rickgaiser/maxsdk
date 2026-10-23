@@ -27,3 +27,11 @@ skips the later handlers of the same cause.
 Consequence: an interrupt-refilled DMA queue (D11b) restarts a channel about 300 cycles after a
 segment ends (≈195 dispatch + ≈100 in the handler, see dma.md). Segments should carry at least a
 few hundred cycles of work; polling is cheaper for very short ones.
+
+## Phases 5 and 8 (PS2, 2026-10-23)
+
+| Fact | Value | Source | Date |
+|---|---|---|---|
+| Timer 1 sampling interrupt (`mx_trace_sample`), cost per sample | 632 / 667 cycles (4 / 16 kHz) | `probe/p5_fast.c` | 2026-10-23 |
+| Semaphore round trip between two BIOS threads of the same priority (SignalSema + WaitSema each way) | 1831 cycles | `tests/ps2/thread.c` | 2026-10-23 |
+| A DMA queue's end interrupt wakes a thread sleeping in `mx_event_sleep` (iSignalSema): end interrupt to that thread running | 973 cycles | `tests/ps2/thread.c` | 2026-10-23 |

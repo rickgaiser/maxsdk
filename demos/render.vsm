@@ -1,0 +1,70 @@
+; VU1 render kernel (phase 6): transform, diffuse + ambient light, perspective
+; correct ST, one PACKED GIF packet per batch, sent with XGKICK.
+;
+; Double buffer at xtop (VIF1 BASE/OFFSET, UNPACK with FLG), quadwords:
+;   0         GIF tag (NLOOP = vertex count, EOP, PRIM, PACKED, ST RGBAQ XYZ2)
+;   1-4       MVP matrix columns: P = c0 x + c1 y + c2 z + c3; P.xy / P.w
+;             are GS coordinates in pixels (2048 at the centre of the
+;             screen), P.z / P.w the Z value / 16 (ftoi4 multiplies by 16)
+;   5         light direction in object space (xyz, towards the light)
+;   6         light colour (rgb, 0..128)
+;   7         ambient colour (rgb) and alpha (w)
+;   8 .. 3n+7 n vertices in: position (xyz), normal (xyz), st (s, t, 1)
+;   3n+8 ..   the GIF packet out: the tag, then ST, RGBAQ, XYZ2 per vertex
+; The constants come with every batch, so batches of different meshes need
+; no FLUSHE between them.
+; The input and output areas are apart: the next batch but one unpacks into
+; this buffer's input area while the GIF may still read its output, and the
+; next batch's XGKICK waits for this one's transfer before its program ends.
+	.section .vutext, "ax", @progbits
+	.globl render_vu
+render_vu:
+	nop				xtop vi2
+	nop				lq.xyzw vf10, 1(vi2)
+	nop				lq.xyzw vf11, 2(vi2)
+	nop				lq.xyzw vf12, 3(vi2)
+	nop				lq.xyzw vf13, 4(vi2)
+	nop				lq.xyzw vf14, 5(vi2)
+	nop				lq.xyzw vf15, 6(vi2)
+	nop				lq.xyzw vf16, 7(vi2)
+	nop				ilw.x vi1, 0(vi2)
+	nop				lq.xyzw vf1, 0(vi2)
+	nop				iaddiu vi3, vi0, 0x7fff
+	nop				iand vi1, vi1, vi3
+	nop				iadd vi4, vi1, vi1
+	nop				iadd vi4, vi4, vi1
+	nop				iaddiu vi5, vi2, 8
+	nop				iadd vi6, vi5, vi4
+	nop				sq.xyzw vf1, 0(vi6)
+	nop				iaddiu vi7, vi6, 0
+	nop				iaddiu vi6, vi6, 1
+	nop				move.w vf8, vf0
+loop:
+	nop				lq.xyzw vf2, 0(vi5)
+	nop				lq.xyzw vf3, 1(vi5)
+	mulax.xyzw acc, vf10, vf2x	lq.xyzw vf4, 2(vi5)
+	madday.xyzw acc, vf11, vf2y	isubiu vi1, vi1, 1
+	maddaz.xyzw acc, vf12, vf2z	iaddiu vi5, vi5, 3
+	maddw.xyzw vf5, vf13, vf0w	nop
+	mul.xyz vf6, vf3, vf14		nop
+	nop				div q, vf0w, vf5w
+	addy.x vf6, vf6, vf6y		nop
+	addz.x vf6, vf6, vf6z		nop
+	max.x vf6, vf6, vf0		nop
+	mulax.xyzw acc, vf15, vf6x	nop
+	maddw.xyzw vf7, vf16, vf0w	nop
+	ftoi0.xyzw vf7, vf7		nop
+	nop				waitq
+	mulq.xyz vf5, vf5, q		nop
+	mulq.xyz vf4, vf4, q		nop
+	ftoi4.xyz vf8, vf5		nop
+	nop				sq.xyzw vf4, 0(vi6)
+	nop				sq.xyzw vf7, 1(vi6)
+	nop				sq.xyzw vf8, 2(vi6)
+	nop				ibne vi1, vi0, loop
+	nop				iaddiu vi6, vi6, 3
+	nop				xgkick vi7
+	nop[e]				nop
+	nop				nop
+	.globl render_vu_end
+render_vu_end:

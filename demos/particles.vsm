@@ -1,0 +1,27 @@
+; VU0 particle step (phase 7 demo): vel.y += g dt, pos += vel dt, in place.
+; Data memory, quadwords: 0 count (x), 1 parameters (x = dt, y = g dt),
+; from 2: per particle position (xyz), velocity (xyz). The EE respawns
+; particles that fell out of view when it reads them back.
+	.section .vutext, "ax", @progbits
+	.globl particles_vu
+particles_vu:
+	nop				ilw.x vi1, 0(vi0)
+	nop				lq.xyzw vf10, 1(vi0)
+	nop				iaddiu vi2, vi0, 2
+	nop				ibeq vi1, vi0, done
+	nop				nop
+loop:
+	nop				lq.xyzw vf1, 0(vi2)
+	nop				lq.xyzw vf2, 1(vi2)
+	addy.y vf2, vf2, vf10y		isubiu vi1, vi1, 1
+	mulax.xyz acc, vf2, vf10x	nop
+	maddw.xyz vf1, vf1, vf0w	nop
+	nop				sq.xyzw vf2, 1(vi2)
+	nop				sq.xyzw vf1, 0(vi2)
+	nop				ibne vi1, vi0, loop
+	nop				iaddiu vi2, vi2, 2
+done:
+	nop[e]				nop
+	nop				nop
+	.globl particles_vu_end
+particles_vu_end:

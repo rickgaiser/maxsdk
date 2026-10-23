@@ -1,19 +1,17 @@
-# maxsdk: build the library, tests and probes with one compiler.
+# maxsdk: build the library, tests and probes with clang (the LLVM R5900
+# toolchain in this tree; gcc is not supported).
 #
-#   make [COMPILER=clang|gcc] [OUT=<dir>]   library, test and probe ELFs
+#   make [OUT=<dir>]                        library, test and probe ELFs
 #   make test-host                          host tests (generated fields, packets)
 #   make check-deps                         fail if anything links ps2sdk
 #   make gen                                regenerate the hardware headers
 #
-# Output goes to toolchain/build/maxsdk/<compiler>/ by default.
+# Output goes to toolchain/build/maxsdk/clang/ by default.
 
 HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX   := $(abspath $(HERE)/../../../..)
-COMPILER ?= clang
-OUT      ?= $(PS2MAX)/toolchain/build/maxsdk/$(COMPILER)
+OUT      ?= $(PS2MAX)/toolchain/build/maxsdk/clang
 LLVM     ?= $(PS2MAX)/toolchain/build/llvm/bin
-EE_BIN   ?= $(PS2MAX)/install/ee/bin
-EE_GCC    = $(EE_BIN)/mips64r5900el-ps2-elf-gcc
 
 HOSTCC   ?= cc
 
@@ -21,19 +19,12 @@ HOSTCC   ?= cc
 # finite math; without the flag it calls soft-float helpers (not in libmx).
 COMMON_CFLAGS = -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -ffreestanding \
                 -fno-common -ffinite-math-only -I$(HERE)/include -G0
-ifeq ($(COMPILER),gcc)
-CC       = $(EE_GCC)
-CFLAGS   = $(COMMON_CFLAGS) -mabi=n32 -fno-lto
-# $(call link,out,objs)
-link     = $(EE_GCC) -nostdlib -T$(HERE)/ld/maxsdk.ld -Wl,-zmax-page-size=128 -Wl,--gc-sections \
-           -Wl,-Map,$(1:.elf=.map) -o $(1) $(2)
-else
 CC       = $(LLVM)/clang
 CFLAGS   = $(COMMON_CFLAGS) --target=mips64el -mcpu=r5900 -mabi=n32 -fno-pic -mno-abicalls \
            -fomit-frame-pointer
+# $(call link,out,objs)
 link     = $(LLVM)/ld.lld -m elf32ltsmipn32 -T$(HERE)/ld/maxsdk.ld -z max-page-size=128 \
            --gc-sections -Map $(1:.elf=.map) -o $(1) $(2)
-endif
 CFLAGS  += $(EXTRA_CFLAGS)
 
 LIB_SRCS := $(wildcard $(HERE)/src/*/*.c) $(wildcard $(HERE)/src/*/*.S)
@@ -102,19 +93,103 @@ $(OUT)/demos/%.elf: $(HERE)/demos/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HDRS) $(HERE)/
 	$(CC) $(CFLAGS) -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(LIB))
 
+# ---- C library and C++ runtime (phase 8, D8c) -------------------------------
+# picolibc (built by `make picolibc` into PICOLIBC) with maxsdk's glue
+# (libc/: stdio on the debug output, sbrk, _exit, a minimal C++ runtime, and
+# the ps2sdk calls bench uses). Programs that use libc link
+#   crt0, objects, libmxc.a, libc.a, libmx.a, compiler-rt builtins
+# (soft double and the float helpers that code without -ffinite-math-only
+# calls). Skipped while picolibc is not built.
+
+PICOLIBC     ?= $(PS2MAX)/toolchain/build/picolibc/install
+PICOLIBC_SRC ?= $(PS2MAX)/toolchain/build/picolibc/src
+# compiler-rt's generic builtins, built like libmx (non-PIC; the toolchain's
+# own libclang_rt.builtins.a is PIC and its GOT relocations do not link here)
+RT_DIR       ?= $(abspath $(HERE)/../llvm-project/compiler-rt/lib/builtins)
+RT_SKIP       = divxc3 emutls enable_execute_stack eprintf extendhfxf2 fixunsxfdi fixunsxfsi \
+                fixunsxfti fixxfdi fixxfti floatdixf floattixf floatundixf floatuntixf mulxc3 \
+                powixf2 truncdfbf2 truncsfbf2 truncxfhf2 clear_cache trampoline_setup \
+                os_version_check gcc_personality_v0 atomic
+RT_SRCS      := $(filter-out $(patsubst %,$(RT_DIR)/%.c,$(RT_SKIP)),$(wildcard $(RT_DIR)/*.c))
+RT_BUILTINS   = $(OUT)/librt.a
+RT_CFLAGS     = -std=gnu11 -O2 -ffreestanding -fno-builtin -w -G0 --target=mips64el -mcpu=r5900 \
+                -mabi=n32 -fno-pic -mno-abicalls
+# hosted, not freestanding: libc is there, and C++ only treats main as the
+# program's entry (unmangled) in a hosted build
+LIBC_CFLAGS   = $(filter-out -ffreestanding,$(CFLAGS)) -isystem $(PICOLIBC)/include \
+                -I$(HERE)/compat/ps2sdk
+CXXFLAGS      = $(filter-out -std=gnu11,$(LIBC_CFLAGS)) -std=gnu++17 -fno-exceptions -fno-rtti
+CXX           = $(LLVM)/clang++
+LIBMXC        = $(OUT)/libmxc.a
+# the glue is linked as an object, so its sbrk and stdio win over picolibc's
+# whatever the archive order
+LIBC_LIBS     = $(OUT)/libc/glue.c.o $(LIBMXC) $(PICOLIBC)/lib/libc.a $(LIB) $(RT_BUILTINS)
+HAVE_LIBC    := $(wildcard $(PICOLIBC)/lib/libc.a)
+
+$(OUT)/libc/%.c.o: $(HERE)/libc/%.c $(HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(LIBC_CFLAGS) -c $< -o $@
+
+$(OUT)/libc/%.cc.o: $(HERE)/libc/%.cc
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(OUT)/rt/%.o: $(RT_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(RT_CFLAGS) -c $< -o $@
+
+$(RT_BUILTINS): $(patsubst $(RT_DIR)/%.c,$(OUT)/rt/%.o,$(RT_SRCS))
+	rm -f $@
+	$(LLVM)/llvm-ar rcs $@ $^
+
+$(LIBMXC): $(OUT)/libc/glue.c.o $(OUT)/libc/compat.c.o $(OUT)/libc/atomic.c.o $(OUT)/libc/cxx.cc.o
+	rm -f $@
+	$(LLVM)/llvm-ar rcs $@ $^
+
+LIBC_TESTS := $(patsubst $(HERE)/tests/libc/%,$(OUT)/libc/tests/%.elf,\
+                $(basename $(wildcard $(HERE)/tests/libc/*.c $(HERE)/tests/libc/*.cc)))
+
+$(OUT)/libc/tests/%.elf: $(HERE)/tests/libc/%.c $(LIBMXC) $(LIB) $(CRT0) $(RT_BUILTINS) $(HERE)/ld/maxsdk.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(LIBC_CFLAGS) -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(LIBC_LIBS))
+
+$(OUT)/libc/tests/%.elf: $(HERE)/tests/libc/%.cc $(LIBMXC) $(LIB) $(CRT0) $(RT_BUILTINS) $(HERE)/ld/maxsdk.ld
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(LIBC_LIBS))
+
+ifneq ($(HAVE_LIBC),)
+all: $(LIBMXC) $(RT_BUILTINS) $(LIBC_TESTS)
+endif
+libc: $(LIBMXC) $(RT_BUILTINS) $(LIBC_TESTS)
+
+# Build picolibc from PICOLIBC_SRC (a picolibc 1.8.9 checkout with
+# libc/picolibc-r5900.patch applied) for the R5900, n32, with clang.
+picolibc:
+	@mkdir -p $(PICOLIBC)/../build-meson
+	sed "s|@LLVM@|$(LLVM)|g" $(HERE)/libc/cross-r5900.txt.in > $(PICOLIBC)/../cross.txt
+	meson setup --wipe $(PICOLIBC)/../build-meson $(PICOLIBC_SRC) --cross-file $(PICOLIBC)/../cross.txt \
+	  --prefix=$(PICOLIBC) -Dmultilib=false -Dpicocrt=false -Dsemihost=false -Dtests=false \
+	  -Dthread-local-storage=false -Dposix-io=false -Dspecsdir=none -Dio-long-long=true \
+	  -Dbuildtype=release
+	ninja -C $(PICOLIBC)/../build-meson install
+
 # ---- the combined PS2 batch ---------------------------------------------------
 # One ELF that runs the tests, probes and demos below in a row, so a single
 # PS2 run covers them. Each program's main() is renamed to <name>_main.
 
 BATCH_SRCS := tests/ps2/dma.c tests/ps2/gs.c tests/ps2/vif.c tests/ps2/vu.c \
-              probe/p2_dma.c probe/p3_gs.c probe/p4_vu.c demos/spin.c tests/ps2/dbit.c
+              tests/ps2/frame.c probe/p2_dma.c probe/p3_gs.c probe/p4_vu.c probe/p5_fast.c \
+              demos/spin.c demos/scene.c demos/allunits.c tests/ps2/thread.c tests/ps2/dbit.c
 BATCH_OBJS := $(patsubst %.c,$(OUT)/batch/%.o,$(BATCH_SRCS))
 
 $(OUT)/batch/%.o: $(HERE)/%.c $(HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DMX_BATCH -Dmain=$(notdir $*)_main -I$(HERE)/tests/ps2 -c $< -o $@
 
-$(OUT)/batch/ps2batch.elf: $(HERE)/tests/batch/ps2batch.c $(BATCH_OBJS) $(LIB) $(CRT0) $(VU_OBJS)
+$(OUT)/batch/ps2batch.elf: $(HERE)/tests/batch/ps2batch.c $(BATCH_OBJS) $(LIB) $(CRT0) $(VU_OBJS) \
+                           $(HERE)/ld/maxsdk.ld
 	$(CC) $(CFLAGS) -DMX_BATCH -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(BATCH_OBJS) $(VU_OBJS) $(LIB))
 
@@ -145,10 +220,10 @@ check-deps: all
 	@echo "check-deps: no ps2sdk"
 
 gen:
-	python3 -I $(HERE)/gen/gen.py
+	python3 -I -B $(HERE)/gen/gen.py
 
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all batch test-host check-deps gen clean
+.PHONY: all batch libc picolibc test-host check-deps gen clean
 .SECONDARY:

@@ -81,6 +81,27 @@ MX_INLINE u64 mx_gs_trxpos(u32 ssax, u32 ssay, u32 dsax, u32 dsay, u32 dir) {
          MX_SET(GS_TRXPOS_DSAX, dsax) | MX_SET(GS_TRXPOS_DSAY, dsay) | MX_SET(GS_TRXPOS_DIR, dir);
 }
 MX_INLINE u64 mx_gs_trxreg(u32 w, u32 h) { return MX_SET(GS_TRXREG_RRW, w) | MX_SET(GS_TRXREG_RRH, h); }
+MX_INLINE u64 mx_gs_tex1(u32 lcm, u32 mxl, u32 mmag, u32 mmin, u32 mtba, u32 l, u32 k) {
+  return MX_SET(GS_TEX1_LCM, lcm) | MX_SET(GS_TEX1_MXL, mxl) | MX_SET(GS_TEX1_MMAG, mmag) |
+         MX_SET(GS_TEX1_MMIN, mmin) | MX_SET(GS_TEX1_MTBA, mtba) | MX_SET(GS_TEX1_L, l) |
+         MX_SET(GS_TEX1_K, k);
+}
+MX_INLINE u64 mx_gs_clamp(u32 wms, u32 wmt, u32 minu, u32 maxu, u32 minv, u32 maxv) {
+  return MX_SET(GS_CLAMP_WMS, wms) | MX_SET(GS_CLAMP_WMT, wmt) | MX_SET(GS_CLAMP_MINU, minu) |
+         MX_SET(GS_CLAMP_MAXU, maxu) | MX_SET(GS_CLAMP_MINV, minv) | MX_SET(GS_CLAMP_MAXV, maxv);
+}
+/* (A - B) * C >> 7 + D; A, B, D: 0 Cs, 1 Cd, 2 zero; C: 0 As, 1 Ad, 2 FIX */
+MX_INLINE u64 mx_gs_alpha(u32 a, u32 b, u32 c, u32 d, u32 fix) {
+  return MX_SET(GS_ALPHA_A, a) | MX_SET(GS_ALPHA_B, b) | MX_SET(GS_ALPHA_C, c) |
+         MX_SET(GS_ALPHA_D, d) | MX_SET(GS_ALPHA_FIX, fix);
+}
+MX_INLINE u64 mx_gs_st(float s, float t) {
+  union {
+    float f[2];
+    u32 u[2];
+  } v = {{s, t}};
+  return (u64)v.u[0] | (u64)v.u[1] << 32;
+}
 MX_INLINE u64 mx_gs_signal(u32 id, u32 mask) {
   return MX_SET(GS_SIGNAL_ID, id) | MX_SET(GS_SIGNAL_IDMSK, mask);
 }

@@ -18,6 +18,7 @@ enum {
   MX_TR_GS_SIGNAL,
   MX_TR_GS_FINISH,
   MX_TR_VSYNC,
+  MX_TR_SAMPLE,       /* arg: MX_TS_* bits of the busy units */
   MX_TR_USER = 0x100, /* free for programs */
 };
 
@@ -50,5 +51,31 @@ u32 mx_trace_count(void);
 /* Copies up to n events, oldest first; returns how many. */
 u32 mx_trace_get(struct mx_trace_ev *out, u32 n);
 void mx_trace_dump(void);
+
+/* ---- sampling ----------------------------------------------------------- */
+
+/* Unit state bits, read from the hardware (mx_trace_units). */
+enum {
+  MX_TS_VIF0 = 1 << 0,    /* DMA channel running (CHCR.STR; an MFIFO drain: ring not empty) */
+  MX_TS_VIF1 = 1 << 1,
+  MX_TS_GIF = 1 << 2,
+  MX_TS_FROMSPR = 1 << 3,
+  MX_TS_TOSPR = 1 << 4,
+  MX_TS_VU0 = 1 << 5,     /* micro program running (VPU-STAT) */
+  MX_TS_VU1 = 1 << 6,
+  MX_TS_PATH = 1 << 7,    /* the GIF is sending a path to the GS (GIF_STAT.APATH) */
+  MX_TS_GSFIFO = 1 << 8,  /* the GS input FIFO is not empty (CSR.FIFO) */
+  MX_TS_N = 9
+};
+
+u32 mx_trace_units(void);
+
+/* Sample the unit state hz times per second from timer 1 (hz = 0 stops).
+   Each sample bumps a counter per busy unit, and is recorded as an
+   MX_TR_SAMPLE event while the trace is on. */
+void mx_trace_sample(u32 hz);
+/* Samples taken since the last mx_trace_sample(), and per unit
+   (busy[MX_TS_N], index = bit number). */
+u32 mx_trace_busy(u32 *busy);
 
 #endif

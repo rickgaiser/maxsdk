@@ -227,7 +227,7 @@ static void mfifo(void) {
   }
   u32 v[REPS];
   for (int r = 0; r < REPS; r++) {
-    mx_mfifo_init(MX_CH_VIF1, ring, sizeof ring);
+    mx_mfifo_init(MX_CH_VIF1, ring, sizeof ring, 0);
     u32 t0 = mx_count();
     for (int k = 0; k < 16; k++)
       for (int p = 0; p < 8; p++)

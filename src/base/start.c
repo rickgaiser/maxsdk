@@ -28,6 +28,7 @@ extern void (*__init_array_start[])(void);
 extern void (*__init_array_end[])(void);
 
 int main(int argc, char **argv);
+void mx__libc_exit(int status) __attribute__((weak, noreturn));
 
 static void *heap_end;
 
@@ -54,5 +55,8 @@ void mx__main(void) {
   for (void (**f)(void) = __init_array_start; f < __init_array_end; f++)
     (*f)();
 
-  mx_exit(main(a->argc, a->argv));
+  int status = main(a->argc, a->argv);
+  if (mx__libc_exit)
+    mx__libc_exit(status); /* libmxc: atexit handlers, static destructors */
+  mx_exit(status);
 }

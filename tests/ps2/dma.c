@@ -150,7 +150,7 @@ static void engine(int ch, volatile u32 *vumem) {
 }
 
 static void mfifo(void) {
-  mx_mfifo_init(MX_CH_VIF1, ring, sizeof ring);
+  mx_mfifo_init(MX_CH_VIF1, ring, sizeof ring, 0);
   /* 24 packets of cnt tag + [NOP STCYCL NOP UNPACK] + 2 quadwords, built in
      two SPR halves: a half is only rewritten after its push has finished
      (on the PS2 the copy runs while the next packet is built) */

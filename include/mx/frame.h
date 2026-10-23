@@ -1,0 +1,107 @@
+#ifndef MX_FRAME_H
+#define MX_FRAME_H
+
+/* The render pipeline (phase 6, decisions D14/D15). A frame is a stream of
+   VIF1 packets: GS writes by DIRECT (PATH2) and VU1 batches that send their
+   GIF packets with XGKICK (PATH1). The EE builds the stream with cursor
+   emitters in two scratchpad halves and pushes each full half into an
+   MFIFO ring (fromSPR); VIF1 drains the ring all the time, so the EE never
+   starts or waits for a DMA itself. Textures go over PATH3 (GIF channel).
+
+   Every frame ends with FLUSH + FINISH. Its FINISH interrupt marks it done,
+   and the vblank handler shows it (mx_gs). Two framebuffers: frame n draws
+   into the buffer of frame n - 2, so mx_frame_begin waits until frame n - 1
+   is on screen.
+
+   Ownership: data referenced by the stream (vertex arrays, textures) must
+   not change until the frame that uses it has passed mx_frame_done(). The
+   stream itself (headers, GIF tags) is copied into the ring. */
+
+#include <mx/emit.h>
+#include <mx/gs.h>
+#include <mx/types.h>
+#include <mx/vu.h>
+
+struct mx_frame_stats {
+  u32 pushes;      /* halves pushed into the ring */
+  u32 wait_ring;   /* EE cycles waiting for ring space */
+  u32 wait_buffer; /* EE cycles in mx_frame_begin waiting for the back buffer */
+};
+
+extern struct mx_frame_stats mx_frame_stats;
+
+/* Start the pipeline (after mx_gs_init and after loading VU1 microcode
+   with mx_vu_load, or load it later with mx_frame_mpg). ring: the MFIFO
+   ring (power-of-two size, aligned to it); spr, spr_bytes: the scratchpad
+   area for the two halves (at most 8 KiB each). VIF1 belongs to the
+   pipeline until mx_frame_stop(). */
+void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes);
+void mx_frame_stop(void);
+
+/* Begin frame n: waits until its framebuffer is free, then appends the
+   drawing environment for it and a clear. Returns the framebuffer (0/1). */
+int mx_frame_begin(u32 r, u32 g, u32 b);
+/* vsync off: frame n only waits for frame n - 2 to be drawn, not for frame
+   n - 1 to be shown, so frames are drawn as fast as the units allow (for
+   throughput measurements; the display tears). On by default. */
+void mx_frame_vsync(int on);
+/* Frame n is ready to be built (mx_frame_begin would not wait). */
+int mx_frame_ready(void);
+/* Frames whose FINISH has come; frame f is done when mx_frame_done() > f. */
+MX_INLINE u32 mx_frame_done(void) { return mx_gs.frames_done; }
+/* The frame being built. */
+MX_INLINE u32 mx_frame_number(void) { return mx_gs.frames; }
+
+/* Room for qwc quadwords of whole DMA packets (tags with their cnt data)
+   in the current half; returns the cursor. qwc <= half / 16. */
+u64 *mx_frame_reserve(u32 qwc);
+void mx_frame_commit(u64 *end);
+
+/* GS writes over PATH2: returns a cursor for qwc quadwords of GIF packets
+   (tags included); commit them with mx_frame_commit. */
+u64 *mx_frame_direct(u32 qwc);
+/* Wait (in the stream) until PATH3 is idle: textures sent before are in
+   GS memory. */
+void mx_frame_wait_path3(void);
+
+/* ---- VU1 batches ------------------------------------------------------------ */
+
+/* Set up VIF1 double buffering for a render kernel (BASE = k->data_qw,
+   OFFSET = half the rest). Batches then alternate between the buffers. */
+void mx_frame_vu1_setup(const struct mx_kernel *k);
+/* Upload microcode in the stream (after a FLUSHE), unless it is resident. */
+void mx_frame_mpg(const void *code, u32 bytes, u32 addr);
+/* The resident header (hdr_qw quadwords at address 0), after a FLUSHE. */
+void mx_frame_vu1_header(const void *hdr, u32 hdr_qw);
+/* One batch into the next buffer: the GIF tag at quadword 0 (NLOOP = n),
+   uni_qw quadwords of constants (copied into the stream) from 1, and n
+   items of k->item_qw quadwords from verts (in memory) after them; then
+   MSCAL. The kernel writes its output (k->out_qw per item) after the
+   items. */
+void mx_frame_vu1_batch(const struct mx_kernel *k, u64 giftag, u64 regs, const void *uni,
+                        u32 uni_qw, const void *verts, u32 n);
+/* Items per batch that fit a buffer of kernel k with uni_qw constants and
+   its output. */
+u32 mx_frame_vu1_max_items(const struct mx_kernel *k, u32 uni_qw);
+
+/* VU1 compute between render passes (D16 b): once the batches before it
+   are drawn (FLUSH), upload k's code if it is not resident, run it on n
+   items at data (in memory) with the header hdr (k's single-buffer layout,
+   items transformed in place), and stop the stream at a VIF i-bit until the
+   EE has read the results into dst (toSPR through spr, spr_bytes; the EE
+   copies them out). Blocks the EE until then; the GS idles meanwhile. k's
+   code must not overlap the render kernel's. Returns 0, or -1 on timeout. */
+int mx_frame_vu1_compute(const struct mx_kernel *k, const void *hdr, const void *data, u32 n,
+                         void *dst, void *spr, u32 spr_bytes);
+
+/* End the frame: FLUSH (VU1 and PATH1 done), FINISH, push the stream. */
+void mx_frame_end(void);
+
+/* ---- textures (PATH3) -------------------------------------------------------- */
+
+/* Upload w x h pixels at data (in memory) to dbp by the GIF channel, now,
+   without waiting. The chain is built in the slot's own buffer. Returns 0,
+   or -1 if the slot's previous upload is still running. */
+int mx_frame_texture(int slot, u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, const void *data);
+
+#endif

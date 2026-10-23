@@ -12,6 +12,7 @@
    They are the ones bench/vudemo used on the PS2. */
 
 #include <mx/bios.h>
+#include <mx/emit.h>
 #include <mx/irq.h>
 #include <mx/pkt.h>
 #include <mx/vu.h>
@@ -121,24 +122,43 @@ void mx_vu1_read(void *dst, u32 addr, u32 qwc) {
     __asm__ volatile("lq $8, 0(%1)\n\tsq $8, 0(%0)" : : "r"(d), "r"(s) : "$8", "memory");
 }
 
-void mx_vu1_read_dma(void *dst, u32 addr, u32 qwc, void *spr, u32 bytes) {
+static void read_dma(u32 mem, void *dst, u32 addr, u32 qwc, void *spr, u32 bytes) {
   u32 piece = bytes / 16;
   u8 *d = dst;
   while (qwc) {
     u32 n = qwc > piece ? piece : qwc;
-    MX_DMA_REG(MX_CH_TOSPR, MADR) = MX_VU1_DATA + 16 * addr;
+    MX_DMA_REG(MX_CH_TOSPR, MADR) = mem + 16 * addr;
     MX_DMA_REG(MX_CH_TOSPR, SADR) = (u32)(uintptr_t)spr & 0x3FF0u;
     MX_DMA_REG(MX_CH_TOSPR, QWC) = n;
     mx_sync();
     MX_DMA_REG(MX_CH_TOSPR, CHCR) = (u32)MX_CHCR_STR;
     mx_dma_wait(MX_CH_TOSPR);
-    mx_dma_from_spr(d, spr, n);
-    mx_dma_wait(MX_CH_FROMSPR);
-    mx_dcache_invalidate(d, n * 16);
+    if (MX_GET(D_CTRL_MFD, MX_R32(MX_D_CTRL))) {
+      /* fromSPR is the MFIFO's source (its MADR is the ring's write
+         pointer): the EE copies from the scratchpad instead */
+      const u8 *sp = spr;
+      for (u32 i = 0; i < n; i++)
+        __asm__ volatile("lq $8, 0(%1)\n\tsq $8, 0(%0)"
+                         :
+                         : "r"(d + 16 * i), "r"(sp + 16 * i)
+                         : "$8", "memory");
+    } else {
+      mx_dma_from_spr(d, spr, n);
+      mx_dma_wait(MX_CH_FROMSPR);
+      mx_dcache_invalidate(d, n * 16);
+    }
     d += 16 * n;
     addr += n;
     qwc -= n;
   }
+}
+
+void mx_vu0_read_dma(void *dst, u32 addr, u32 qwc, void *spr, u32 bytes) {
+  read_dma(MX_VU0_DATA, dst, addr, qwc, spr, bytes);
+}
+
+void mx_vu1_read_dma(void *dst, u32 addr, u32 qwc, void *spr, u32 bytes) {
+  read_dma(MX_VU1_DATA, dst, addr, qwc, spr, bytes);
 }
 
 /* ---- microcode ------------------------------------------------------------ */
@@ -179,22 +199,71 @@ static void mark_resident(int vu, const void *code, u32 bytes, u32 addr) {
 }
 
 static u32 mpg_buf[2 * 2048 + 64] MX_ALIGNED(64);
+static u64 mpg_tags[2 * 16] MX_ALIGNED(64);
+
+u64 *mx_vu_mpg_tags(u64 *t, const void *code, u32 bytes, u32 addr) {
+  u32 n = bytes / 8;
+  const u32 *c = code;
+  while (n >= 2) {
+    u32 k = n > 256 ? 256 : n & ~1u;
+    t = mx_e_ref(t, c, k / 2, 0, mx_vif_mpg(k, addr));
+    c += 2 * k;
+    addr += k;
+    n -= k;
+  }
+  if (n) {
+    t = mx_e_cnt(t, 1, 0, mx_vif_mpg(1, addr));
+    t = mx_e_w4(t, c[0], c[1], 0, 0);
+  }
+  return t;
+}
+
+int mx_vu_resident(int vu, const void *code, u32 bytes, u32 addr) {
+  return is_resident(vu, code, bytes, addr);
+}
+
+void mx_vu_mark_resident(int vu, const void *code, u32 bytes, u32 addr) {
+  mark_resident(vu, code, bytes, addr);
+}
+
+/* The code is sent where it is, by ref tags with MPG in the tag's upper
+   word (the instructions then start on a quadword). An odd last instruction
+   goes in a cnt packet of its own, padded with VIF NOPs. Code that is not
+   16-byte aligned is copied into a packet with the builder. */
+static int load_chain(const void *code, u32 bytes, u32 addr, void **chain) {
+  u32 n = bytes / 8;
+  if ((uintptr_t)code & 15) {
+    struct mx_pkt p;
+    mx_pkt_begin(&p, mpg_buf, sizeof mpg_buf, MX_PKT_VIF);
+    mx_pkt_end(&p, mx_vif_flushe(), 0);
+    mx_pkt_mpg(&p, code, bytes, addr);
+    if (mx_pkt_finish(&p) < 0)
+      return -1;
+    mx_pkt_writeback(&p);
+    *chain = mpg_buf;
+    return 0;
+  }
+  if (n > 2048)
+    return -1;
+  u64 *t = mx_e_cnt(mpg_tags, 0, mx_vif_flushe(), 0);
+  t = mx_vu_mpg_tags(t, code, bytes, addr);
+  t = mx_e_end(t, 0, 0, 0);
+  mx_dcache_writeback(mpg_tags, (u32)((u8 *)t - (u8 *)mpg_tags));
+  *chain = mpg_tags;
+  return 0;
+}
 
 int mx_vu_load(int vu, const void *code, u32 bytes, u32 addr) {
   if (is_resident(vu, code, bytes, addr))
     return 0;
   int ch = vu ? MX_CH_VIF1 : MX_CH_VIF0;
-  /* built cached and written back: VIF0 did not start on the PS2 with tags
-     written through the uncached alias (docs/dma.md) */
-  struct mx_pkt p;
-  mx_pkt_begin(&p, mpg_buf, sizeof mpg_buf, MX_PKT_VIF);
-  mx_pkt_end(&p, mx_vif_flushe(), 0);
-  mx_pkt_mpg(&p, code, bytes, addr);
-  if (mx_pkt_finish(&p) < 0)
-    return -1;
-  mx_pkt_writeback(&p);
+  /* tags written cached and written back: VIF0 did not start on the PS2 with
+     tags written through the uncached alias (docs/dma.md) */
   mx_dma_wait(ch);
-  mx_dma_chain(ch, mpg_buf, 1);
+  void *chain;
+  if (load_chain(code, bytes, addr, &chain) < 0)
+    return -1;
+  mx_dma_chain(ch, chain, 1);
   mx_dma_wait(ch);
   mark_resident(vu, code, bytes, addr);
   return 1;
@@ -237,6 +306,7 @@ void mx_vuq_init(struct mx_vuq *q, int vu, int dma) {
   else {
     q->dq.ch = -1;
     q->dq.done = q->dq.issued = 0;
+    q->dq.sleep_sema = q->dq.sema = -1;
   }
 }
 
@@ -452,18 +522,17 @@ static int wait_dbuf(struct mx_vuq *q, mx_event e, u32 t0) {
 
 int mx_vuq_wait(struct mx_vuq *q, mx_event e) {
   u32 t0 = mx_count();
+  q->ready_seq = e.seq;
   if (!q->dma) {
     mx_vu0_wait();
     q->dq.done = e.seq;
     return 0;
   }
-  q->ready_seq = e.seq;
   if (q->dbuf_mode)
     return wait_dbuf(q, e, t0);
-  while (!mx_event_done(e))
-    if (mx_count() - t0 > 294912000u)
-      return -1;
-  /* The DMA end does not mean the VIF has seen everything: the last
+  /* Polled, not the DMA end interrupt: the MARK follows the batch's last
+     quadword, so it also means the DMA is done with the batch.
+     The DMA end does not mean the VIF has seen everything: the last
      quadwords can still be on their way while the VIF looks idle. Use the
      batch's MARK. Single buffer: MARK seq follows FLUSHE, so the program has
      ended. Double buffer: MARK seq follows MSCAL (the program has started);
@@ -480,6 +549,15 @@ int mx_vuq_wait(struct mx_vuq *q, mx_event e) {
   }
 }
 
+int mx_vuq_done(struct mx_vuq *q, mx_event e) {
+  if (!q->dma)
+    return !(mx_vpu_stat() & MX_VPU_VBS0);
+  if (q->dbuf_mode)
+    return -1;
+  u32 mark = q->vu ? MX_VIF_VIF1_MARK : MX_VIF_VIF0_MARK;
+  return (s16)(MX_R32(mark) - (q->mark_base + e.seq)) >= 0;
+}
+
 void mx_vuq_readback_spr(struct mx_vuq *q, void *spr, u32 bytes) {
   q->spr = spr;
   q->spr_bytes = bytes;
@@ -489,8 +567,8 @@ void mx_vuq_read(struct mx_vuq *q, const struct mx_kernel *k, void *dst, u32 n) 
   u32 at = k->data_qw;
   if (k->dbuf && q->dma)
     at = mx_kernel_buffer(k, q->buf_of[q->ready_seq % MX_VUQ_SLOTS]) + 1;
-  if (q->vu && q->spr)
-    mx_vu1_read_dma(dst, at, n * k->item_qw, q->spr, q->spr_bytes);
+  if (q->spr)
+    (q->vu ? mx_vu1_read_dma : mx_vu0_read_dma)(dst, at, n * k->item_qw, q->spr, q->spr_bytes);
   else if (q->vu)
     mx_vu1_read(dst, at, n * k->item_qw);
   else if (k->dbuf && q->dma)

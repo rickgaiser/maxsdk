@@ -16,5 +16,6 @@ extern int test_failures;
 
 void test_gen_fields(void);
 void test_pkt(void);
+void test_emit(void);
 
 #endif

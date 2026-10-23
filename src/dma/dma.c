@@ -1,3 +1,4 @@
+#include <mx/bios.h>
 #include <mx/dma.h>
 #include <mx/irq.h>
 #include <mx/trace.h>
@@ -95,7 +96,7 @@ static struct {
   u32 ring, size; /* physical start, bytes */
 } mf;
 
-void mx_mfifo_init(int drain_ch, void *ring, u32 size) {
+void mx_mfifo_init(int drain_ch, void *ring, u32 size, int tte) {
   mf.drain = drain_ch;
   mf.ring = mx_phys(ring);
   mf.size = size;
@@ -106,7 +107,7 @@ void mx_mfifo_init(int drain_ch, void *ring, u32 size) {
   MX_R32(MX_D_CTRL) = c | (u32)MX_SET(D_CTRL_MFD, drain_ch == MX_CH_VIF1 ? 2 : 3);
   MX_DMA_REG(drain_ch, QWC) = 0;
   MX_DMA_REG(drain_ch, TADR) = mf.ring;
-  start(drain_ch, MX_CHCR_CHAIN | MX_CHCR_FROM_MEM);
+  start(drain_ch, MX_CHCR_CHAIN | MX_CHCR_FROM_MEM | (tte ? MX_CHCR_TTE : 0));
 }
 
 u32 mx_mfifo_used(void) {
@@ -157,6 +158,10 @@ static void q_irq(void *arg) {
   u32 h = q->head + 1;
   q->head = h;
   q->done++;
+  if (q->sleep_sema >= 0 && (s32)(q->done - q->sleep_seq) >= 0) {
+    mx_bios_isignal_sema(q->sleep_sema);
+    q->sleep_sema = -1;
+  }
   if (h != q->tail)
     q_start(q, &q->seg[h % MX_DMAQ_LEN]);
   else
@@ -169,6 +174,8 @@ void mx_dmaq_init(struct mx_dmaq *q, int ch) {
   q->head = q->tail = 0;
   q->done = q->issued = 0;
   q->running = 0;
+  q->sleep_sema = -1;
+  q->sema = -1;
   /* a stale end status would fire as soon as the interrupt is enabled */
   MX_R32(MX_D_STAT) = 1u << ch;
   mx_irq_dmac(ch, q_irq, q);

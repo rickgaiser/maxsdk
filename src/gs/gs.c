@@ -1,5 +1,6 @@
 #include <mx/bios.h>
 #include <mx/dma.h>
+#include <mx/emit.h>
 #include <mx/gs.h>
 #include <mx/irq.h>
 #include <mx/trace.h>
@@ -41,6 +42,11 @@ static void vsync_irq(void *arg) {
   if (mx_gs.frames_done && mx_gs.shown != mx_gs.frames_done) {
     mx_gs.shown = mx_gs.frames_done;
     show(mx_gs.shown - 1);
+  } else if (mx_gs.counting) {
+    if (mx_gs.frames != mx_gs.frames_done)
+      mx_gs.missed++;
+    else
+      mx_gs.starved++;
   }
 }
 
@@ -54,6 +60,7 @@ void mx_gs_init(u32 w, u32 h) {
   mx_gs.zbp = 2 * pages;
   mx_gs.tbp = 3 * pages * 32;
   mx_gs.frames = mx_gs.frames_done = mx_gs.shown = 0;
+  mx_gs.missed = mx_gs.starved = mx_gs.counting = 0;
 
   mx_dma_init();
   MX_R32(MX_GIF_CTRL) = (u32)MX_BIT(GIF_CTRL_RST);
@@ -138,6 +145,27 @@ void mx_gs_upload(struct mx_pkt *p, u32 dbp, u32 dbw, u32 psm, u32 x, u32 y, u32
   /* the texture cache must not keep old data */
   mx_pkt_ad_begin(p, 1, 1);
   mx_pkt_ad(p, MX_GS_REG_TEXFLUSH, 0);
+}
+
+u64 *mx_gs_e_draw_env(u64 *c, int buf, int eop) {
+  u32 w = mx_gs.w, h = mx_gs.h;
+  c = mx_e_ad_tag(c, 8, eop);
+  c = mx_e_ad(c, MX_GS_REG_FRAME_1, mx_gs_frame(mx_gs.fbp[buf], mx_gs.fbw, MX_GS_PSM_CT32, 0));
+  c = mx_e_ad(c, MX_GS_REG_ZBUF_1, mx_gs_zbuf(mx_gs.zbp, MX_GS_PSM_Z24, 0));
+  c = mx_e_ad(c, MX_GS_REG_XYOFFSET_1, mx_gs_xyoffset((2048 - w / 2) << 4, (2048 - h / 2) << 4));
+  c = mx_e_ad(c, MX_GS_REG_SCISSOR_1, mx_gs_scissor(0, w - 1, 0, h - 1));
+  c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1));
+  c = mx_e_ad(c, MX_GS_REG_PRMODECONT, 1);
+  c = mx_e_ad(c, MX_GS_REG_COLCLAMP, 1);
+  return mx_e_ad(c, MX_GS_REG_DTHE, 0);
+}
+
+u64 *mx_gs_e_clear(u64 *c, u32 r, u32 g, u32 b, int eop) {
+  c = mx_e_ad_tag(c, 4, eop);
+  c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0));
+  c = mx_e_ad(c, MX_GS_REG_RGBAQ, mx_gs_rgbaq(r, g, b, 0x80, 1.0f));
+  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_gs_px(0), mx_gs_py(0), 0));
+  return mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_gs_px(mx_gs.w), mx_gs_py(mx_gs.h), 0));
 }
 
 void mx_gs_send(const void *chain) {

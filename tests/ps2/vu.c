@@ -81,7 +81,7 @@ static void run_spr(int vu, int dma, int spr_readback) {
 /* Double-buffered batches (VU0: ITOP + xitop; VU1: BASE/OFFSET + xtop):
    batch b+1 is sent before batch b's results are read. spr: VU1 results by
    DMA readback. */
-static void run_db(int vu, int spr) {
+static void run_db(int vu, int spr) { /* spr: results by DMA readback */
   struct mx_kernel k = {.vu = vu,
                         .code = vu ? dbl1db_vu : dbl0db_vu,
                         .code_bytes = (u32)(vu ? dbl1db_vu_end - dbl1db_vu : dbl0db_vu_end - dbl0db_vu),
@@ -236,6 +236,31 @@ static void itop(void) {
   CHECK_EQ(v[0] & 0xFFFF, 0x5A);
 }
 
+/* mx_vu_load sends aligned code by ref tags (256 instructions per MPG) and
+   an odd last instruction in a cnt packet: upload 601 instructions to
+   micro memory and read them back through the mapping (VU stopped). */
+static u32 code601[2 * 601 + 2] MX_ALIGNED(16);
+static void mpg_big(int vu) {
+  for (u32 i = 0; i < 2 * 601; i++)
+    code601[i] = 0x5a000000u ^ (i * 2654435761u);
+  mx_dcache_writeback(code601, sizeof code601);
+  mx_vu_forget(vu);
+  CHECK_EQ(mx_vu_load(vu, code601, 601 * 8, 3), 1);
+  u32 mem = vu ? MX_VU1_MICRO : MX_VU0_MICRO;
+  u32 words = vu ? 2 * 601 : 2 * 509; /* VU0 micro memory: 512 instructions */
+  if (!vu) {
+    mx_vu_forget(0);
+    CHECK_EQ(mx_vu_load(0, code601, 509 * 8, 3), 1);
+  }
+  int bad = 0;
+  for (u32 i = 0; i < words; i++)
+    bad += MX_R32(mem + 3 * 8 + 4 * i) != code601[i];
+  if (bad)
+    mx_printf("vu%d mpg: %d of %u words wrong\n", vu, bad, words);
+  CHECK_EQ(bad, 0);
+  mx_vu_forget(vu);
+}
+
 #define STEP(x)                                                                            \
   do {                                                                                     \
     mx_printf("- %s\n", #x);                                                               \
@@ -250,9 +275,13 @@ int main(void) {
   STEP(run(0, 1));
   STEP(run(1, 1));
   STEP(run_spr(1, 1, 1));
+  STEP(run_spr(0, 1, 1));
   STEP(run_db(0, 0));
   STEP(run_db(1, 0));
   STEP(run_db(1, 1));
+  STEP(run_db(0, 1));
+  STEP(mpg_big(1));
+  STEP(mpg_big(0));
   STEP(tbit());
   STEP(double_buffer_kick());
   STEP(itop());
