@@ -239,8 +239,8 @@ int main(void) {
   if (MX_DEBUG_SIO)
     mx_debug_sinks(MX_SINK_SIO);
   mx_dma_init();
-  MX_R32(MX_VIF_VIF0_FBRST) = 1; /* reset the VIFs */
-  MX_R32(MX_VIF_VIF1_FBRST) = 1;
+  mx_vif_reset(0); /* reset the VIFs */
+  mx_vif_reset(1);
   STEP(spr_normal());
   STEP(spr_interleave());
   STEP(spr_dest_chain());

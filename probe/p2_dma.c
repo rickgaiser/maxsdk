@@ -266,8 +266,8 @@ static void vif0_uncached_tags(void) {
 
 int main(void) {
   mx_dma_init();
-  MX_R32(MX_VIF_VIF0_FBRST) = 1;
-  MX_R32(MX_VIF_VIF1_FBRST) = 1;
+  mx_vif_reset(0);
+  mx_vif_reset(1);
   mx_printf("p2_dma: machine type %d, memory %d\n", mx_bios_machine_type(),
             mx_bios_get_memory_size());
   mx_debug_hold(1);

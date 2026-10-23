@@ -3,6 +3,7 @@
 #include <mx/emit.h>
 #include <mx/gs.h>
 #include <mx/irq.h>
+#include <mx/sif.h>
 #include <mx/trace.h>
 
 struct mx_gs mx_gs;
@@ -27,8 +28,15 @@ static void gs_irq(void *arg) {
   }
   if (csr & MX_BIT(GS_CSR_FINISH)) {
     mx_gs.finish++;
+    mx_gs.finish_at = mx_count();
     if (mx_gs.frames_done < mx_gs.frames)
       mx_gs.frames_done++;
+    /* without vsync: show it now (it tears), so the next frame, which
+       starts after this FINISH, draws into the buffer that is not shown */
+    if (mx_gs.immediate && mx_gs.shown != mx_gs.frames_done) {
+      mx_gs.shown = mx_gs.frames_done;
+      show(mx_gs.shown - 1);
+    }
     mx_trace(MX_TR_GS_FINISH, (u16)mx_gs.finish);
   }
   /* acknowledge what we saw (writing 1 clears) */
@@ -41,8 +49,9 @@ static void vsync_irq(void *arg) {
   /* show the newest finished frame */
   if (mx_gs.frames_done && mx_gs.shown != mx_gs.frames_done) {
     mx_gs.shown = mx_gs.frames_done;
+    mx_gs.slack = mx_count() - mx_gs.finish_at;
     show(mx_gs.shown - 1);
-  } else if (mx_gs.counting) {
+  } else if (mx_gs.counting && !mx_gs.immediate && mx_gs.shown > mx_gs.first) {
     if (mx_gs.frames != mx_gs.frames_done)
       mx_gs.missed++;
     else
@@ -60,21 +69,25 @@ void mx_gs_init(u32 w, u32 h) {
   mx_gs.zbp = 2 * pages;
   mx_gs.tbp = 3 * pages * 32;
   mx_gs.frames = mx_gs.frames_done = mx_gs.shown = 0;
-  mx_gs.missed = mx_gs.starved = mx_gs.counting = 0;
+  mx_gs.missed = mx_gs.starved = mx_gs.counting = mx_gs.immediate = mx_gs.first = 0;
 
   mx_dma_init();
   MX_R32(MX_GIF_CTRL) = (u32)MX_BIT(GIF_CTRL_RST);
   CSR = MX_BIT(GS_CSR_RESET);
   mx_bios_gs_put_imr(0xFF00);
-  mx_bios_set_gs_crt(1, 2, 1); /* interlaced, NTSC, frame mode */
+  /* interlaced NTSC. Up to 256 lines: FRAME mode, each field shows every
+     line (both fields the same image, half a line apart); more: FIELD mode,
+     each field shows every other line of the buffer */
+  int full = h > 256;
+  mx_bios_set_gs_crt(1, 2, !full);
 
   /* read circuit 2 only (sceGsSetDefDispEnv's NTSC values) */
   MX_R64(MX_GS_PMODE) = 0x66;
-  MX_R64(MX_GS_SMODE2) = 3;
+  MX_R64(MX_GS_SMODE2) = MX_SET(GS_SMODE2_INT, 1) | MX_SET(GS_SMODE2_FFMD, !full);
   show(0);
   MX_R64(MX_GS_DISPLAY2) = MX_SET(GS_DISPLAY2_DX, 0x27C) | MX_SET(GS_DISPLAY2_DY, 50) |
                            MX_SET(GS_DISPLAY2_MAGH, (2560 + w - 1) / w - 1) |
-                           MX_SET(GS_DISPLAY2_DW, 0x9FF) | MX_SET(GS_DISPLAY2_DH, (h << 1) - 1);
+                           MX_SET(GS_DISPLAY2_DW, 0x9FF) | MX_SET(GS_DISPLAY2_DH, (full ? h : h << 1) - 1);
   MX_R64(MX_GS_BGCOLOR) = 0;
 
   CSR = MX_BIT(GS_CSR_SIGNAL) | MX_BIT(GS_CSR_FINISH);
@@ -235,5 +248,34 @@ int mx_gs_download(void *dst, u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 
   MX_R64(MX_GS_BUSDIR) = 0;
   MX_R32(MX_VIF_VIF1_STAT) = 0;
   mx_dcache_invalidate(dst, bytes);
+  return r;
+}
+
+int mx_gs_save_tga(int buf, const char *path) {
+  static u32 line[1024] MX_ALIGNED(64);
+  static u8 out[1024 * 4] MX_ALIGNED(64);
+  u32 w = mx_gs.w, h = mx_gs.h, rep = h > 256 ? 1 : 2; /* lines doubled up to 256 */
+  int fd = mx_fio_open(path, MX_FIO_WRONLY | MX_FIO_CREAT | MX_FIO_TRUNC);
+  if (fd < 0)
+    return -1;
+  /* uncompressed true colour, origin at the top left */
+  u8 hdr[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, (u8)w, (u8)(w >> 8), (u8)(rep * h),
+                (u8)(rep * h >> 8), 32, 0x28};
+  int r = mx_fio_write(fd, hdr, sizeof hdr);
+  for (u32 y = 0; y < h && r == 0; y++) {
+    if (mx_gs_download(line, MX_GS_PAGE(mx_gs.fbp[buf]), mx_gs.fbw, MX_GS_PSM_CT32, 0, y, w,
+                       1) < 0) {
+      r = -1;
+      break;
+    }
+    for (u32 x = 0; x < w; x++) {
+      u32 p = line[x];
+      out[4 * x] = (u8)(p >> 16), out[4 * x + 1] = (u8)(p >> 8), out[4 * x + 2] = (u8)p;
+      out[4 * x + 3] = 0xFF;
+    }
+    for (u32 k = 0; k < rep && r == 0; k++)
+      r = mx_fio_write(fd, out, 4 * w);
+  }
+  mx_fio_close(fd);
   return r;
 }

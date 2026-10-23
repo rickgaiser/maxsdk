@@ -12,7 +12,10 @@ static struct {
   int novsync;
 } f;
 
-void mx_frame_vsync(int on) { f.novsync = !on; }
+void mx_frame_vsync(int on) {
+  f.novsync = !on;
+  mx_gs.immediate = !on;
+}
 
 void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
   u32 half = spr_bytes / 2 & ~15u;
@@ -25,6 +28,7 @@ void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
   f.pos = f.half[0];
   f.end = f.half[0] + 2 * f.half_qw;
   mx_frame_stats.pushes = mx_frame_stats.wait_ring = mx_frame_stats.wait_buffer = 0;
+  mx_gs.first = mx_gs.frames;
   mx_dma_wait(MX_CH_VIF1);
   mx_mfifo_init(MX_CH_VIF1, ring, size, 1);
 }
@@ -160,6 +164,67 @@ void mx_frame_vu1_batch(const struct mx_kernel *k, u64 giftag, u64 regs, const v
     qw -= m;
   }
   mx_frame_commit(mx_e_cnt(c, 0, 0, mx_vif_mscal(k->entry)));
+}
+
+/* ---- shaders ------------------------------------------------------------------ */
+
+u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *uni,
+                       const void *const *streams, u32 n) {
+  u32 m = (n + s->align - 1) / s->align * s->align;
+  c = mx_e_cnt(c, 1 + s->uni_qw, mx_vif_stcycl(1, 1),
+               mx_vif_unpack(MX_UNPACK_V4_32, 0, 1 + s->uni_qw, MX_UNPACK_FLG));
+  c = mx_e_qw(c, mx_giftag(n, 1, (s32)prim, MX_GIF_FLG_PACKED, s->nreg), s->regs);
+  const u64 *u = uni;
+  for (u32 i = 0; i < s->uni_qw; i++)
+    c = mx_e_qw(c, u[2 * i], u[2 * i + 1]);
+  /* input i of every vertex goes to quadword i of its item */
+  for (u32 i = 0; i < s->nin; i++) {
+    const struct mx_shader_in *in = &s->in[i];
+#ifdef MX_DEBUG
+    /* DMA drops the low address bits: a stream must start on a quadword */
+    if ((uintptr_t)streams[i] & 15)
+      mx__emit_overflow(__FILE__, __LINE__);
+#endif
+    c = mx_e_ref(c, streams[i], m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
+                 mx_vif_unpack(in->fmt, 1 + s->uni_qw + i, m,
+                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0)));
+  }
+  return mx_e_cnt(c, 0, mx_vif_stcycl(1, 1), mx_vif_mscal(s->entry));
+}
+
+void mx_frame_shader_setup(const struct mx_shader *s) {
+  u64 *c = mx_frame_reserve(2);
+  c = mx_e_cnt(c, 1, mx_vif_base(0), mx_vif_offset(s->buf_qw));
+  c = mx_e_vif4(c, mx_vif_stcycl(1, 1), 0, 0, 0);
+  mx_frame_commit(c);
+  mx_frame_mpg(s->code, s->code_bytes, s->entry);
+}
+
+void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,
+                          const void *const *streams, u32 n) {
+  u32 type = prim & 7, step, size = s->max_n / s->align * s->align;
+  if (type == MX_GS_PRIM_TRISTRIP) {
+    /* the next batch starts with the last two vertices, on an aligned one */
+    size = (s->max_n - 2) / s->align * s->align + 2;
+    step = size - 2;
+  } else {
+    if (type == MX_GS_PRIM_TRIANGLE)
+      while (size % 3)
+        size -= s->align;
+    step = size;
+  }
+  const void *at[MX_SHADER_MAX_IN];
+  for (u32 v = 0; v < n; v += step) {
+    u32 k = n - v < size ? n - v : size;
+    if (type == MX_GS_PRIM_TRISTRIP && v && k < 3)
+      break;
+    for (u32 i = 0; i < s->nin; i++)
+      at[i] = (const u8 *)streams[i] + v * s->in[i].bytes;
+    u64 *c = mx_frame_reserve(mx_shader_batch_qw(s));
+    mx_frame_commit(mx_shader_e_batch(c, s, prim, uni, at, k));
+    if (v + k >= n)
+      break;
+  }
 }
 
 static u32 comp_hdr[16 * 4] MX_ALIGNED(16);

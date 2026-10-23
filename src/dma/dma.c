@@ -1,7 +1,10 @@
 #include <mx/bios.h>
+#include <mx/debug.h>
 #include <mx/dma.h>
 #include <mx/irq.h>
+#include <mx/timer.h>
 #include <mx/trace.h>
+#include <mx/vu.h>
 
 const u32 mx_dma_base[10] = {
     MX_DMA_VIF0,    MX_DMA_VIF1, MX_DMA_GIF,  MX_DMA_FROMIPU, MX_DMA_TOIPU,
@@ -116,11 +119,26 @@ u32 mx_mfifo_used(void) {
   return ((w - r) & (mf.size - 1)) / 16;
 }
 
+/* The ring has not drained for a second: report where the drain stands. */
+static void mfifo_stalled(void) {
+  mx_printf("mx_mfifo_push: the ring has not drained for 1 s: %s CHCR %08x MADR %08x "
+            "TADR %08x QWC %u; VIF1_STAT %08x VIF1_CODE %08x GIF_STAT %08x VPU_STAT %08x\n",
+            mf.drain == MX_CH_VIF1 ? "VIF1" : "GIF", MX_DMA_REG(mf.drain, CHCR),
+            MX_DMA_REG(mf.drain, MADR), MX_DMA_REG(mf.drain, TADR), MX_DMA_REG(mf.drain, QWC),
+            MX_R32(MX_VIF_VIF1_STAT), MX_R32(MX_VIF_VIF1_CODE), MX_R32(MX_GIF_STAT),
+            mx_vpu_stat());
+}
+
 void mx_mfifo_push(const void *spr, u32 qwc) {
   mx_dma_wait(MX_CH_FROMSPR);
   /* keep one quadword free, so full and empty differ */
+  u32 t0 = mx_count();
+  int reported = 0;
   while (mx_mfifo_used() + qwc >= mf.size / 16)
-    ;
+    if (!reported && mx_count() - t0 > MX_EE_HZ) {
+      mfifo_stalled();
+      reported = 1;
+    }
   MX_DMA_REG(MX_CH_FROMSPR, SADR) = (u32)(uintptr_t)spr & 0x3FF0u;
   MX_DMA_REG(MX_CH_FROMSPR, QWC) = qwc;
   start(MX_CH_FROMSPR, MX_CHCR_NORMAL);

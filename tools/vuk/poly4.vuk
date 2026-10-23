@@ -1,0 +1,22 @@
+// The same p(x) as poly.vuk, 4 degrees per step:
+//   y = y * x^4 + (c[k] + c[k+1] x + c[k+2] x^2 + c[k+3] x^3)
+// Each step is one ACC chain (MULA, MADDA x3, MADD) instead of 4 x 2
+// instructions, so a quadword takes D/4 * 5 + 3 FMAC instructions, not 2 D.
+// D must be a multiple of 4.
+
+const D = 16;
+
+kernel poly(n: i16, c: f32[D + 1], x: f32x4[]) {
+    for i in 0..n {
+        var v = x[i];
+        var v2 = v * v;
+        var v3 = v2 * v;
+        var v4 = v2 * v2;
+        var y = c[D] * v4 + (c[D - 4] + c[D - 3] * v + c[D - 2] * v2 + c[D - 1] * v3);
+        for g in 2..D / 4 + 1 {
+            var k = D - 4 * g;
+            y = y * v4 + (c[k] + c[k + 1] * v + c[k + 2] * v2 + c[k + 3] * v3);
+        }
+        x[i] = y;
+    }
+}

@@ -1,0 +1,34 @@
+// Quality level 3 (PLAN_PROCGEN): near terrain. Three directional lights by a
+// light matrix, fog, and clipping for triangle strips: a triangle that has a
+// vertex outside the guard band or near the eye is not drawn. Its last
+// vertex gets ADC, which the vertex finds from its own excess and that of the
+// two vertices before it (shader state).
+shader lvl3 {
+    uniform mvp: f32x4[4];
+    uniform lm: f32x4[3];   // lm[0] x + lm[1] y + lm[2] z = (n.L0, n.L1, n.L2) for n * 127;
+                            // lm[0].w: the nearest w
+    uniform lc: f32x4[4];   // colours of the lights, lc[3] ambient (w 1 keeps alpha)
+    uniform prm: f32x4;     // fog = clamp(w * x + y, 0, 255) (255 none, 0 all fog);
+                            // z: the centre of the screen in GS coordinates;
+                            // w: guard band |X - z|, |Y - z| < w w
+    in pos: v3_32;
+    in nrm: v4_8;
+    in col: v4_8u;
+    in uv: v2_16;
+    state exs = 0;          // x: the excess of the vertex before, y: of the one before that
+    var p = mvp[0] * pos.x + mvp[1] * pos.y + mvp[2] * pos.z + mvp[3];
+    var q = rcp(p.w);
+    var n = itof0(nrm);
+    var d = max(lm[0] * n.x + lm[1] * n.y + lm[2] * n.z, 0);
+    var light = lc[3] + lc[0] * d.x + lc[1] * d.y + lc[2] * d.z;
+    var fog = clamp(p.w * prm.x + prm.y, 0, 255);
+    // outside: |X - c| - k w > 0, |Y - c| - k w > 0 or w < near. 2048 sets
+    // ADC after ftoi4; any positive excess gives the full 2048.
+    var o = abs(p - p.w * prm.z) - p.w * prm.w;
+    var ex = max(max(o.x, o.y), lm[0].w - p.w);
+    var adc = clamp(max(ex, max(exs.x, exs.y)) * 1000000000, 0, 2048);
+    exs = with_y(ex, exs.x);
+    out st = with_z(itof12(uv) * q, q);
+    out rgbaq = ftoi0(min(itof0(col) * light, 255)); // 255: RGBAQ keeps 8 bits
+    out xyzf2 = ftoi4(with_w(p * q, fog + adc));
+}

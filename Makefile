@@ -17,8 +17,9 @@ HOSTCC   ?= cc
 
 # -ffinite-math-only: the R5900 FPU has no INF/NaN, so clang only uses it for
 # finite math; without the flag it calls soft-float helpers (not in libmx).
+# -fno-math-errno: the math functions do not set errno, so sqrtf is sqrt.s.
 COMMON_CFLAGS = -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -ffreestanding \
-                -fno-common -ffinite-math-only -I$(HERE)/include -G0
+                -fno-common -ffinite-math-only -fno-math-errno -I$(HERE)/include -G0
 CC       = $(LLVM)/clang
 CFLAGS   = $(COMMON_CFLAGS) --target=mips64el -mcpu=r5900 -mabi=n32 -fno-pic -mno-abicalls \
            -fomit-frame-pointer
@@ -51,6 +52,31 @@ $(OUT)/vu/%.o: $(OUT)/vu/%.bin
 	  '.incbin "$<"' '.globl $*_vu_end' '$*_vu_end:' > $(@:.o=.S)
 	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
 
+# vuk programs (tools/vuk, one kernel or shader per file): IR and a C header
+# with the layout (<name>.h), compiled by llc for VU1 and wrapped the same way
+# as the microcode above.
+VUK      = python3 -I $(HERE)/tools/vuk/vuk.py
+VUKS     := $(wildcard $(HERE)/tests/ps2/*.vuk $(HERE)/demos/*.vuk)
+VUK_OBJS := $(patsubst %.vuk,$(OUT)/vuk/%.o,$(notdir $(VUKS)))
+VUK_HDRS := $(patsubst %.vuk,$(OUT)/vuk/%.h,$(notdir $(VUKS)))
+vpath %.vuk $(HERE)/tests/ps2 $(HERE)/demos
+CFLAGS   += -I$(OUT)/vuk
+
+$(OUT)/vuk/%.ll $(OUT)/vuk/%.h &: %.vuk $(HERE)/tools/vuk/vuk.py
+	@mkdir -p $(dir $@)
+	$(VUK) $< -o $(OUT)/vuk/$*.ll -H $(OUT)/vuk/$*.h
+
+$(OUT)/vuk/%.vu.elf: $(OUT)/vuk/%.ll
+	$(LLVM)/llc -mtriple=vu -mcpu=vu1 -O3 -filetype=obj $< -o $@
+
+$(OUT)/vuk/%.bin: $(OUT)/vuk/%.vu.elf
+	$(LLVM)/llvm-objcopy -O binary --only-section=.vutext $< $@
+
+$(OUT)/vuk/%.o: $(OUT)/vuk/%.bin
+	printf '%s\n' '.section .vutext, "a"' '.balign 16' '.globl $*_vu' '$*_vu:' \
+	  '.incbin "$<"' '.globl $*_vu_end' '$*_vu_end:' > $(@:.o=.S)
+	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
+
 TESTS    := $(patsubst $(HERE)/tests/ps2/%.c,$(OUT)/tests/%.elf,$(wildcard $(HERE)/tests/ps2/*.c))
 PROBES   := $(patsubst $(HERE)/probe/%.c,$(OUT)/probe/%.elf,$(wildcard $(HERE)/probe/*.c))
 DEMOS    := $(patsubst $(HERE)/demos/%.c,$(OUT)/demos/%.elf,$(wildcard $(HERE)/demos/*.c))
@@ -78,20 +104,24 @@ $(LIB): $(LIB_OBJS)
 
 # Each test or probe is one C file, linked with crt0 and libmx only (libmx
 # has the compiler helper functions; no libgcc).
-$(OUT)/tests/%.elf: $(HERE)/tests/ps2/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HDRS) $(HERE)/ld/maxsdk.ld
+$(OUT)/tests/%.elf: $(HERE)/tests/ps2/%.c $(LIB) $(CRT0) $(VU_OBJS) $(VUK_OBJS) $(VUK_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(LIB))
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(VUK_OBJS) $(LIB))
 
-$(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HDRS) $(HERE)/ld/maxsdk.ld
+$(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(VUK_OBJS) $(VUK_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(LIB))
+	$(CC) $(CFLAGS) $(PROBE_CFLAGS) -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(VUK_OBJS) $(LIB))
 
-$(OUT)/demos/%.elf: $(HERE)/demos/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HDRS) $(HERE)/ld/maxsdk.ld
+# VU0 macro mode (COP2 instructions in inline asm)
+$(OUT)/probe/p10_vucopy.elf: PROBE_CFLAGS = -mvu0
+$(OUT)/probe/p11_vu0mix.elf: PROBE_CFLAGS = -mvu0
+
+$(OUT)/demos/%.elf: $(HERE)/demos/%.c $(LIB) $(CRT0) $(VU_OBJS) $(VUK_OBJS) $(VUK_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(LIB))
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(VUK_OBJS) $(LIB))
 
 # ---- C library and C++ runtime (phase 8, D8c) -------------------------------
 # picolibc (built by `make picolibc` into PICOLIBC) with maxsdk's glue
@@ -184,14 +214,14 @@ BATCH_SRCS := tests/ps2/dma.c tests/ps2/gs.c tests/ps2/vif.c tests/ps2/vu.c \
               demos/spin.c demos/scene.c demos/allunits.c tests/ps2/thread.c tests/ps2/dbit.c
 BATCH_OBJS := $(patsubst %.c,$(OUT)/batch/%.o,$(BATCH_SRCS))
 
-$(OUT)/batch/%.o: $(HERE)/%.c $(HDRS)
+$(OUT)/batch/%.o: $(HERE)/%.c $(HDRS) $(VUK_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DMX_BATCH -Dmain=$(notdir $*)_main -I$(HERE)/tests/ps2 -c $< -o $@
 
 $(OUT)/batch/ps2batch.elf: $(HERE)/tests/batch/ps2batch.c $(BATCH_OBJS) $(LIB) $(CRT0) $(VU_OBJS) \
-                           $(HERE)/ld/maxsdk.ld
+                           $(VUK_OBJS) $(HERE)/ld/maxsdk.ld
 	$(CC) $(CFLAGS) -DMX_BATCH -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(BATCH_OBJS) $(VU_OBJS) $(LIB))
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(BATCH_OBJS) $(VU_OBJS) $(VUK_OBJS) $(LIB))
 
 batch: $(OUT)/batch/ps2batch.elf
 

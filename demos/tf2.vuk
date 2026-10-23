@@ -1,0 +1,20 @@
+// procgen terrain, near (quality level 2 with fog): lit, with the detail
+// texture (V2-16 coordinates in 4.12), perspective correct.
+shader tf2 {
+    uniform mvp: f32x4[4];
+    uniform fogc: f32x4;
+    uniform light: f32x4;
+    uniform lcol: f32x4;
+    uniform amb: f32x4;
+    in pos: v3_32;
+    in nrm: v4_8;
+    in col: v4_8u;
+    in uv: v2_16;
+    var p = mvp[0] * pos.x + mvp[1] * pos.y + mvp[2] * pos.z + mvp[3];
+    var q = rcp(p.w);
+    var d = max(dot3(itof0(nrm), light), 0);
+    var fog = clamp(p.w * fogc.x + fogc.y, 0, 255);
+    out st = with_z(itof12(uv) * q, q);
+    out rgbaq = ftoi0(min(itof0(col) * (amb + lcol * d), 255)); // 255: RGBAQ keeps 8 bits
+    out xyzf2 = ftoi4(with_w(p * q, fog));
+}

@@ -1,0 +1,14 @@
+; VU1: XGKICK the GIF packet at address 0 n times (n in 1023.x), to time
+; PATH1 with the GS drawing it (probe/p9_gs.c). A kick waits until the
+; previous one is sent.
+	.section .vutext, "ax", @progbits
+	nop		iaddiu vi1, vi0, 0
+	nop		ilw.x vi2, 1023(vi0)
+loop:
+	nop		xgkick vi1
+	nop		isubiu vi2, vi2, 1
+	nop		nop
+	nop		ibne vi2, vi0, loop
+	nop		nop
+	nop[e]		nop
+	nop		nop

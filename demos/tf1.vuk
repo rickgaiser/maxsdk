@@ -1,0 +1,16 @@
+// procgen terrain, middle (quality level 1 with fog): one directional light.
+shader tf1 {
+    uniform mvp: f32x4[4];
+    uniform fogc: f32x4;
+    uniform light: f32x4;   // towards the light, divided by 127; w 0
+    uniform lcol: f32x4;    // light colour (1 = the base colour); w 0
+    uniform amb: f32x4;     // ambient; w 1 keeps the alpha
+    in pos: v3_32;
+    in nrm: v4_8;
+    in col: v4_8u;
+    var p = mvp[0] * pos.x + mvp[1] * pos.y + mvp[2] * pos.z + mvp[3];
+    var d = max(dot3(itof0(nrm), light), 0);
+    var fog = clamp(p.w * fogc.x + fogc.y, 0, 255);
+    out rgbaq = ftoi0(min(itof0(col) * (amb + lcol * d), 255)); // 255: RGBAQ keeps 8 bits
+    out xyzf2 = ftoi4(with_w(p / p.w, fog));
+}

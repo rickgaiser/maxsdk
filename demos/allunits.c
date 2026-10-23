@@ -274,7 +274,8 @@ int main(void) {
             wait_step / FRAMES);
   mx_printf("allunits: VU0 %u batches, %u particle updates\n", vu0w.batches, vu0w.items);
   static const char *units[MX_TS_N] = {"VIF0 DMA", "VIF1 DMA", "GIF DMA",  "fromSPR", "toSPR",
-                                       "VU0",      "VU1",      "GIF path", "GS FIFO"};
+                                       "VU0",      "VU1",      "GIF path", "GS FIFO",
+                                       "VU1 GIF wait"};
   for (int u = 0; u < MX_TS_N; u++)
     mx_printf("allunits: busy %-8s %3u%% of %u samples\n", units[u], ns ? busy[u] * 100 / ns : 0,
               ns);

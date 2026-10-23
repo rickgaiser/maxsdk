@@ -238,14 +238,16 @@ static void itop(void) {
 
 /* mx_vu_load sends aligned code by ref tags (256 instructions per MPG) and
    an odd last instruction in a cnt packet: upload 601 instructions to
-   micro memory and read them back through the mapping (VU stopped). */
+   micro memory and read them back through the mapping (VU stopped). VU0's
+   micro memory holds 512: it refuses the 601 (they would wrap onto the code
+   at 0) and takes 509. */
 static u32 code601[2 * 601 + 2] MX_ALIGNED(16);
 static void mpg_big(int vu) {
   for (u32 i = 0; i < 2 * 601; i++)
     code601[i] = 0x5a000000u ^ (i * 2654435761u);
   mx_dcache_writeback(code601, sizeof code601);
   mx_vu_forget(vu);
-  CHECK_EQ(mx_vu_load(vu, code601, 601 * 8, 3), 1);
+  CHECK_EQ(mx_vu_load(vu, code601, 601 * 8, 3), vu ? 1 : -1);
   u32 mem = vu ? MX_VU1_MICRO : MX_VU0_MICRO;
   u32 words = vu ? 2 * 601 : 2 * 509; /* VU0 micro memory: 512 instructions */
   if (!vu) {

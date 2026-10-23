@@ -36,6 +36,28 @@ mx_bios_exit:
 	.end mx_bios_exit
 	.size mx_bios_exit, .-mx_bios_exit
 
+	.globl mx_bios_set_tlb_handler
+	.type mx_bios_set_tlb_handler, @function
+	.ent mx_bios_set_tlb_handler
+mx_bios_set_tlb_handler:
+	li $3, 13
+	syscall
+	jr $31
+	nop
+	.end mx_bios_set_tlb_handler
+	.size mx_bios_set_tlb_handler, .-mx_bios_set_tlb_handler
+
+	.globl mx_bios_set_common_handler
+	.type mx_bios_set_common_handler, @function
+	.ent mx_bios_set_common_handler
+mx_bios_set_common_handler:
+	li $3, 14
+	syscall
+	jr $31
+	nop
+	.end mx_bios_set_common_handler
+	.size mx_bios_set_common_handler, .-mx_bios_set_common_handler
+
 	.globl mx_bios_add_intc_handler
 	.type mx_bios_add_intc_handler, @function
 	.ent mx_bios_add_intc_handler

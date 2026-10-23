@@ -19,9 +19,15 @@
 u32 mx_vpu_stat(void);
 #define MX_VPU_VBS0 (1u << 0) /* VU0 busy */
 #define MX_VPU_VBS1 (1u << 8) /* VU1 busy */
+#define MX_VPU_VGW1 (1u << 12) /* VU1 waits for the GIF (XGKICK) */
 
 /* Reset VU0 and/or VU1 (FBRST) and their VIFs. mask: bit 0 VU0, bit 1 VU1. */
 void mx_vu_reset(int mask);
+/* Reset VIF0 or VIF1 and mask its DMAtag mismatch and invalid command
+   errors (VIFn_ERR.ME0/ME1): the hardware reports a DMAtag mismatch for
+   correct packets, which stops the VIF (EE User's Manual, VIFn_ERR; seen on
+   the PS2 with a V2-16 UNPACK, not on PCSX2). Startup does it for both. */
+void mx_vif_reset(int vif);
 /* Enable the T-bit / D-bit interrupts of VU0 (vu 0) or VU1 (vu 1). A reset
    (mx_vu_reset) clears both enables. Do not enable the D bit on VU1: a D
    bit with FBRST.DE1 set hung the PS2 (docs/interrupts.md). */
@@ -117,7 +123,7 @@ u32 mx_kernel_max_items(const struct mx_kernel *k);
 u32 mx_kernel_buffer(const struct mx_kernel *k, int b);
 
 #define MX_VUQ_SLOTS 4
-#define MX_VUQ_TAGS 8
+#define MX_VUQ_TAGS 16
 
 /* A queue of batches for one VU. VU1 always uses VIF1 DMA; VU0 uses COP2
    transfers (dma = 0) or VIF0 DMA (dma = 1). */

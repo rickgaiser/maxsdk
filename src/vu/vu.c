@@ -37,6 +37,12 @@ static void vif_resume(int vu) {
   MX_R32(vu ? MX_VIF_VIF1_FBRST : MX_VIF_VIF0_FBRST) = (u32)MX_BIT(VIF_FBRST_STC);
 }
 
+void mx_vif_reset(int vif) {
+  MX_R32(vif ? MX_VIF_VIF1_FBRST : MX_VIF_VIF0_FBRST) = (u32)MX_BIT(VIF_FBRST_RST);
+  MX_R32(vif ? MX_VIF_VIF1_ERR : MX_VIF_VIF0_ERR) =
+      (u32)(MX_BIT(VIF_ERR_ME0) | MX_BIT(VIF_ERR_ME1));
+}
+
 void mx_vu_reset(int mask) {
   u32 v = 0;
   if (mask & 1)
@@ -45,11 +51,11 @@ void mx_vu_reset(int mask) {
     v |= MX_BIT(VU_FBRST_RS1);
   fbrst_set(v);
   if (mask & 1) {
-    MX_R32(MX_VIF_VIF0_FBRST) = (u32)MX_BIT(VIF_FBRST_RST);
+    mx_vif_reset(0);
     mx_vu_forget(0);
   }
   if (mask & 2) {
-    MX_R32(MX_VIF_VIF1_FBRST) = (u32)MX_BIT(VIF_FBRST_RST);
+    mx_vif_reset(1);
     mx_vu_forget(1);
   }
 }
@@ -254,6 +260,10 @@ static int load_chain(const void *code, u32 bytes, u32 addr, void **chain) {
 }
 
 int mx_vu_load(int vu, const void *code, u32 bytes, u32 addr) {
+  /* micro memory: VU0 4 KiB, VU1 16 KiB; beyond it the address wraps and
+     overwrites the code at 0 */
+  if (addr * 8 + bytes > (vu ? 16384u : 4096u))
+    return -1;
   if (is_resident(vu, code, bytes, addr))
     return 0;
   int ch = vu ? MX_CH_VIF1 : MX_CH_VIF0;
@@ -361,7 +371,7 @@ static mx_event batch_dbuf(struct mx_vuq *q, const struct mx_kernel *k, const vo
     mx_dmaq_drain(&q->dq);
     while (!vif_idle(1))
       ;
-    MX_R32(MX_VIF_VIF1_FBRST) = (u32)MX_BIT(VIF_FBRST_RST);
+    mx_vif_reset(1);
     q->hdr_valid = 0;
   }
   struct mx_pkt p;
@@ -459,6 +469,22 @@ mx_event mx_vuq_batch(struct mx_vuq *q, const struct mx_kernel *k, const void *h
   struct mx_pkt p;
   mx_pkt_begin(&p, unc ? MX_UNCACHED(&q->tags[s][0][0]) : &q->tags[s][0][0], sizeof q->tags[s],
                MX_PKT_VIF);
+  /* The kernel's code first, if other code replaced it at its address (two
+     kernels that do not fit micro memory together take turns): MPG waits for
+     the program before it to end. Code of an even number of instructions,
+     16-byte aligned (vuk's .vutext). */
+  if (!is_resident(q->vu, k->code, k->code_bytes, k->entry)) {
+    const u8 *c = k->code;
+    u32 left = k->code_bytes / 8, at = k->entry;
+    while (left) {
+      u32 m = left > 256 ? 256 : left;
+      mx_pkt_ref(&p, c, m / 2, 0, mx_vif_mpg(m, at));
+      c += 8 * m;
+      at += m;
+      left -= m;
+    }
+    mark_resident(q->vu, k->code, k->code_bytes, k->entry);
+  }
   mx_pkt_ref(&p, &q->hdr[s][0], k->hdr_qw, mx_vif_stcycl(1, 1),
              mx_vif_unpack(MX_UNPACK_V4_32, 0, k->hdr_qw, 0));
   const u8 *d = data;

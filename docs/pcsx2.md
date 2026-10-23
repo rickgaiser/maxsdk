@@ -21,3 +21,19 @@ Correctness notes only. PCSX2 (flatpak 2.5.x) timings are never performance data
 | A second SIGNAL before CSR.SIGNAL is cleared (GS interrupts masked) | the same: the GS stops until CSR.SIGNAL is written | the GS stops at the second SIGNAL (SIGID 0x11, the LABEL after it not yet set) and goes on once CSR.SIGNAL is written | maxsdk `probe/p5_fast.c` |
 | Stall control, normal-mode VIF1 drain (`probe/p5_fast.c` stall_normal) | the drain waits; data correct | the drain does not wait: 28 of 28 words wrong | maxsdk `probe/p5_fast.c` |
 | Timing of everything in phases 5-7 (frame pipeline, mx_sched, sampling) | | DMA, VU and GS work finish almost at once: busy shares read 0 %, there are no missed vblanks | maxsdk `demos/scene.c`, `demos/allunits.c` |
+
+## PLAN_PROCGEN (PS2 and PCSX2 2.5, 2026-10-23/24)
+
+| Behaviour | PS2 | PCSX2 | Source |
+|---|---|---|---|
+| VU FMAC multiply with 1.0 in **fs** (`MULw.w d, vf0, s`, the VU target's old field copy) | 1 ULP towards 0 for 4096 of 4096 random values (powers of two: exact) | exact | `probe/p10_vucopy.c` |
+| VU FMAC multiply with 1.0 in **ft** (`MULw.w d, s, vf0w`), ADD with 0, MOVE, MR32, ACC moves, DIV by 1 | exact | exact | `probe/p10_vucopy.c` |
+| VU add of a small operand to a large one (`(v + 1.5·2^23) − 1.5·2^23`, the magic-constant floor) | the smaller operand is cut to one bit below the sum's last first: floor is 1 too high for a negative v with a fraction below 0.5 (1040 of 8192 values) | exact | `tests/ps2/floor.c` |
+| procgen's dust: the box wrap `q − floor(q)` of negative values | wrong (all motes out of view, none drawn) | right | `tests/ps2/dust.c` |
+| fBm noise on VU0 against the EE, 6 octaves (before the two rows above were handled) | 1022 of 1089 samples agree | 66 of 1089 | `tests/ps2/noise.c` |
+| The same with exact copies (LLVM) and the exact floor (vuk) | 1089 of 1089 | 1089 of 1089 | `tests/ps2/noise.c` |
+| A load through a bad pointer (procgen, address 0x1a8, from an LLVM miscompile) | TLB miss exception | reads low memory, the program goes on | `demos/procgen.c`, exception report |
+| A load from address 0x2 (misaligned) | not measured | no exception, returns 0 | scratch test of `src/base/exception.c` |
+| GS SPRITE with UV at texel edges, 1:1 (the font) | the last column and row of each glyph are not drawn; UV + 8 (half a texel) draws them | drawn either way | procgen screenshots |
+| Debug output of a line written in several writes, or the first lines when the SIF is first used in the middle of GS/DMA set-up | pieces lost (ps2link's udptty: one UDP broadcast per write) | nothing lost | `demos/levels.c`, `demos/procgen.c` |
+| procgen max count (no vsync) | 192 fps, 20.5 M vertices/s, VU1 99 % | 290 fps; busy shares 0 % | `demos/procgen.c` (PCSX2 timings are not data) |

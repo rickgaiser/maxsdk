@@ -10,6 +10,10 @@
 | vadd → qmfc2 / sqc2 | reads late, +1 |
 | vdiv / vsqrt → vwaitq | 9; vrsqrt 15; vdiv does not block vadd |
 | One COP2 op per cycle | vadd pairs with addu and lw, not with lqc2, mul.s or paddw |
+| Multiply with 1.0 in fs (`vmulw.w d, vf0, s`) | 1 ULP towards 0 for any value but a power of two; 1.0 in ft is exact (`probe/p10_vucopy.c`, 2026-10-24) |
+| Add of operands of very different size | the smaller is cut to one bit below the sum's last before the add: `(v + 1.5·2^23) − 1.5·2^23` is floor(v) + 1 for a negative v with a fraction below 0.5 (`tests/ps2/floor.c`, 2026-10-24) |
+| Macro and micro mode in one program | a plain macro instruction (VADD) issued while a micro program runs waits for it to end (196 876 cycles after a VCALLMS of fbm), and the program's results are unchanged; QMFC2.I the same; a VF register set by macro code is overwritten by the program (they are shared). PCSX2 the same. (`probe/p11_vu0mix.c`, 2026-10-24) |
+| Compiled macro code (clang `-mvu0`) | VF registers are caller-saved (the VU0 callee-saved list in MipsCallingConv.td is not used), so no VF value is kept across a call such as `mx_vuq_batch`; inline asm that starts a program names them as clobbered (`"$vf1"`…`"$vf31"`, added to clang 2026-10-24); `cfc2.i`/`ctc2.i`/`qmfc2.i`/`qmtc2.i` assemble with `-mvu0` |
 | lqc2 / sqc2 | 1 per cycle (load/store unit), pair with addu, not with lw |
 | qmtc2 / qmfc2 | 1 per cycle, pair with addu/paddw, not with lw/mtc1/vadd |
 | qmfc2 → GPR | 3; qmfc2 → mtc1 → add.s 4.5; pextlw → qmtc2 → vadd 4 |

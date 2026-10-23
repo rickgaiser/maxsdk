@@ -233,7 +233,7 @@ static void build_cost(void) {
 
 int main(void) {
   mx_gs_init(640, 224);
-  MX_R32(MX_VIF_VIF1_FBRST) = 1;
+  mx_vif_reset(1);
   struct mx_pkt p;
   mx_pkt_begin(&p, pk, sizeof pk, MX_PKT_VIF);
   mx_pkt_end(&p, 0, 0);

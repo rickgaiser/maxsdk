@@ -43,7 +43,9 @@ void mx_frame_stop(void);
 int mx_frame_begin(u32 r, u32 g, u32 b);
 /* vsync off: frame n only waits for frame n - 2 to be drawn, not for frame
    n - 1 to be shown, so frames are drawn as fast as the units allow (for
-   throughput measurements; the display tears). On by default. */
+   throughput measurements). Each frame is shown at its FINISH (the display
+   tears), before the GS starts on the next one, which draws into the other
+   buffer. On by default. */
 void mx_frame_vsync(int on);
 /* Frame n is ready to be built (mx_frame_begin would not wait). */
 int mx_frame_ready(void);
@@ -96,6 +98,66 @@ int mx_frame_vu1_compute(const struct mx_kernel *k, const void *hdr, const void 
 
 /* End the frame: FLUSH (VU1 and PATH1 done), FINISH, push the stream. */
 void mx_frame_end(void);
+
+/* ---- shaders (vuk shader mode, PLAN_PROCGEN) --------------------------------- */
+
+/* A VU1 render program compiled by vuk from a `shader` (tools/vuk/vuk.md):
+   per vertex it reads one quadword per input and writes nreg GIF registers.
+   Each input is its own stream in memory, in its UNPACK format, so position,
+   normal and colour can each take as few bytes as they need. */
+struct mx_shader_in {
+  u8 fmt;   /* UNPACK vn << 2 | vl (MX_UNPACK_*) */
+  u8 usn;   /* zero-extend */
+  u8 bytes; /* per vertex in memory */
+};
+#define MX_SHADER_MAX_IN 8
+struct mx_shader {
+  const void *code;
+  u32 code_bytes;
+  u32 entry;   /* 64-bit units */
+  u32 buf_qw;  /* VU1 double buffer (VIF1 BASE 0, OFFSET buf_qw) */
+  u32 uni_qw;  /* uniforms after the GIF tag */
+  u32 item_qw; /* = number of inputs */
+  u32 out_qw;  /* = nreg */
+  u32 max_n;   /* vertices per batch */
+  u32 align;   /* batches start at multiples of it, and up to align - 1 more
+                  vertices are read after the last one */
+  u32 nreg;
+  u64 regs;    /* GIF register list */
+  u32 nin;
+  struct mx_shader_in in[MX_SHADER_MAX_IN];
+};
+
+/* From the vuk -H header of shader NAME and its code symbols. */
+#define MX_VUK_SHADER(NAME, code_, code_end_)                                              \
+  ((struct mx_shader){.code = (code_), .code_bytes = (u32)((code_end_) - (code_)),         \
+                      .entry = VUK_##NAME##_ENTRY, .buf_qw = VUK_##NAME##_BUF_QW,          \
+                      .uni_qw = VUK_##NAME##_UNI_QW, .item_qw = VUK_##NAME##_ITEM_QW,      \
+                      .out_qw = VUK_##NAME##_OUT_QW, .max_n = VUK_##NAME##_MAX_N,          \
+                      .align = VUK_##NAME##_ALIGN, .nreg = VUK_##NAME##_NREG,              \
+                      .regs = VUK_##NAME##_REGS, .nin = VUK_##NAME##_NIN,                  \
+                      .in = VUK_##NAME##_INPUTS})
+
+/* Quadwords of VIF packets that mx_shader_e_batch writes (the input data is
+   referenced, not copied). */
+MX_INLINE u32 mx_shader_batch_qw(const struct mx_shader *s) { return 3 + s->uni_qw + s->nin; }
+/* One batch of n <= s->max_n vertices: the GIF tag (PRIM prim, NLOOP n, EOP)
+   and the uniforms into the next VU1 buffer (UNPACK with FLG), then each
+   input from streams[i] (vertex 0 of the batch, quadword aligned; n rounded
+   up to s->align vertices are read), then MSCAL. Returns the cursor. */
+u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *uni,
+                       const void *const *streams, u32 n);
+
+/* Set up VIF1 double buffering for s (BASE 0, OFFSET s->buf_qw) and upload
+   its code unless it is resident. */
+void mx_frame_shader_setup(const struct mx_shader *s);
+/* Draw n vertices of streams with s in the current frame, as one primitive
+   (MX_GS_PRIM_TRISTRIP: batches overlap by 2 vertices; TRIANGLE: batches of
+   whole triangles; anything else: batches of any size). prim is the PRIM
+   register value (shading, texture, ...). The streams need room for
+   s->align - 1 vertices after the last one. */
+void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,
+                          const void *const *streams, u32 n);
 
 /* ---- textures (PATH3) -------------------------------------------------------- */
 

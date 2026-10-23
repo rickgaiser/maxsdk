@@ -29,3 +29,38 @@ same data; hot loops should use the cursor emitters (D5a) or constant packets.
 | spin on the frame pipeline: 120 frames in 119 vsyncs, no missed vblank (the phase 3 synchronous loop: 146 vsyncs) | | | `demos/spin.c` | 2026-10-23 |
 | scene, 64 textured lit cubes + a 64x64 texture streamed every frame: 240 frames in 239 vsyncs, missed 0; EE builds a frame in 70 k cycles | | | `demos/scene.c` | 2026-10-23 |
 | scene without vsync, 256 cubes (3072 triangles): VU1 batches double buffered **440 k cycles/frame**, a FLUSHE after every batch 581 k: double buffering saves 24 % on the render path | | | `demos/scene.c` | 2026-10-23 |
+
+## Triangles (PLAN_PROCGEN P0, PS2, 2026-10-23, `probe/p9_gs.c`)
+
+640×224, 32-bit colour, Z24 test GEQUAL with Z writes. EE cycles. PATH3 = 4096 triangles in
+one GIF DMA from memory; PATH1 = 256 triangles kicked 9 times from VU1 memory (difference to
+one kick). "side s" = right triangles of s×s/2 pixels in rows; ADC = vertices sent, not drawn.
+
+| Fact | Value | Conditions |
+|---|---|---|
+| **GS triangle setup floor, Gouraud or textured** | **8.0 cycles per triangle** (4 GS cycles) | strips of 2–8 px, PATH1 PACKED or REGLIST, PATH3 REGLIST |
+| … flat (IIP = 0, untextured) | 4.2 cycles per triangle | PATH3 REGLIST strips, 2 px |
+| **PATH1 transfer (ADC)** | **2.0 cycles per GS register written**: PACKED 2.0 cycles/qw, REGLIST 4.0 cycles/qw | REGLIST halves the qw, not the time |
+| PATH3 from memory (ADC) | 4.6–4.8 cycles/qw PACKED, 4.7 REGLIST (9.5 per qw-pair of regs) | the GIF DMA from memory is the limit |
+| Fill, large triangles (512 px) | flat / Gouraud 0.164, textured point 0.314, textured bilinear 0.42 cycles per pixel | 64×64 CT32 texture, modulate |
+| Size where fill passes the setup floor | ~50 px flat/Gouraud, ~25 px textured point, ~20 px bilinear | |
+| PATH1 strip vertex, Gouraud: 2 regs = 4 cycles to send, 8 to set up | GS-bound at 8 | |
+| PATH1 strip vertex, textured: 3 regs = 6 cycles to send, 8 to set up | GS-bound at 8 (12.4 at 32 px, 45 at 128 px) | |
+| Lists over PATH3 | 14 / 28 / 42 cycles per triangle (flat / Gouraud / textured PACKED): transfer-bound | 3 vertices per triangle |
+| **The GIF tag's PRIM field is ignored in REGLIST mode** | the previous PRIM stays (a SPRITE after a clear drew sprites); write PRIM by A+D first | PS2 and PCSX2 |
+
+## Display (PLAN_PROCGEN P4, PS2, 2026-10-23)
+
+| Fact | Value | Conditions | Source | Date |
+|---|---|---|---|---|
+| SMODE2.FFMD = 1 (FRAME: every line in each field) with a 224-line buffer | both fields show the same image, half a line apart: the picture bobs at 60 Hz (seen as flicker of every edge on a TV) | interlaced NTSC | user on the TV, `demos/procgen.c` | 2026-10-23 |
+| 640×448 at 60 fields/s: FFMD = 0 (FIELD: every other line per field) from a 448-line buffer, DISPLAY.DH = 447 | `mx_gs_init(640, 448)`; each frame is drawn in full; two buffers + Z24 take 3.4 of the 4 MiB | | `demos/procgen.c` | 2026-10-23 |
+| No vsync, two buffers: the display switched at the vblank only | the next frame was already drawn into the buffer on screen (the whole screen flickers); now a frame is shown at its FINISH (it tears), before the GS starts on the next | `mx_frame_vsync(0)` | user on the TV | 2026-10-23 |
+| The first frame of a run is submitted at any point of the field | its first vblank is not a missed one: `mx_gs.missed` counts from the vblank after the run's first frame is shown | | `demos/procgen.c` | 2026-10-23 |
+| `mx_gs.slack`: EE cycles from a frame's FINISH to the vblank that shows it | procgen keeps 8–20 % of a field (its view distance follows it) | vsync on | `demos/procgen.c` | 2026-10-23 |
+
+Consequences: the GS draws at most one Gouraud/textured triangle per 8 EE cycles (≈ 615 k
+per 60 Hz frame, 37 M/s). Strips cost one vertex per triangle, so PATH1 sending (2 cycles
+per register) stays under the GS floor up to 4 registers per vertex: PACKED is enough, REGLIST
+gains nothing on PATH1. Lists send 3 vertices per triangle and become transfer-bound (12–18
+cycles per triangle on PATH1).

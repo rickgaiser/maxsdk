@@ -235,7 +235,7 @@ static void mskpath3(void) {
 
 int main(void) {
   mx_gs_init(640, 224);
-  MX_R32(MX_VIF_VIF1_FBRST) = 1;
+  mx_vif_reset(1);
   STEP(unpack_formats());
   STEP(mask_row());
   STEP(double_buffer());

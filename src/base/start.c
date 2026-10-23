@@ -4,6 +4,7 @@
 #include <mx/cpu.h>
 #include <mx/debug.h>
 #include <mx/mx.h>
+#include <mx/vu.h>
 
 #define MX_MAX_ARGS 16
 
@@ -50,6 +51,9 @@ void mx__main(void) {
     a = &mx__loader_args->args;
 
   mx_debug_init();
+  mx_exception_init();
+  mx_vif_reset(0);
+  mx_vif_reset(1);
   mx_ei();
 
   for (void (**f)(void) = __init_array_start; f < __init_array_end; f++)

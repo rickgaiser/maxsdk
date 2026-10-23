@@ -65,7 +65,8 @@ enum {
   MX_TS_VU1 = 1 << 6,
   MX_TS_PATH = 1 << 7,    /* the GIF is sending a path to the GS (GIF_STAT.APATH) */
   MX_TS_GSFIFO = 1 << 8,  /* the GS input FIFO is not empty (CSR.FIFO) */
-  MX_TS_N = 9
+  MX_TS_VU1GW = 1 << 9,   /* VU1 (counted busy) waits at an XGKICK for the GIF (VPU-STAT.VGW1) */
+  MX_TS_N = 10
 };
 
 u32 mx_trace_units(void);

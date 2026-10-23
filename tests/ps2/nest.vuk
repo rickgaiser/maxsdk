@@ -1,0 +1,12 @@
+// tests/ps2/vukloops.c: a run-time loop in a run-time loop, each pass over
+// the same items: x[i] = x[i] * 3 + k, k = 1, 2, ... per pass.
+unit vu0;
+kernel nest(n: i16, passes: i16, x: f32x4[]) {
+    var k = 1.0;
+    for p in 0..passes {
+        for i in 0..n {
+            x[i] = x[i] * 3 + k;
+        }
+        k = k + 1;
+    }
+}

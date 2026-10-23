@@ -31,6 +31,8 @@
 #define DMA_ERT 0x40
 
 #define FILEIO_SID 0x80000001u
+#define FILEIO_OPEN 0
+#define FILEIO_CLOSE 1
 #define FILEIO_WRITE 3
 
 #define RPC_PKT_SIZE 64
@@ -232,8 +234,10 @@ static int wait_done(struct mx_sif_client *c) {
   return 0;
 }
 
-int mx_sif_bind(struct mx_sif_client *c, u32 sid) {
-  for (int tries = 0; tries < 1000; tries++) {
+int mx_sif_bind(struct mx_sif_client *c, u32 sid) { return mx_sif_bind_tries(c, sid, 1000); }
+
+int mx_sif_bind_tries(struct mx_sif_client *c, u32 sid, int n) {
+  for (int tries = 0; tries < n; tries++) {
     u8 *p = rpc_alloc();
     volatile u32 *w = uw(p);
     c->pkt = p;
@@ -269,6 +273,38 @@ int mx_sif_call(struct mx_sif_client *c, int fno, const void *send, u32 ssize, v
   return wait_done(c);
 }
 
+/* ---- IOP modules ---------------------------------------------------------- */
+
+#define LOADFILE_SID 0x80000006
+
+/* The argument of LOADFILE's function 0 (load a module): the result comes
+   back in its first two words. */
+struct lf_load_arg {
+  s32 result; /* in: the length of args */
+  s32 modres;
+  char path[252];
+  char args[252];
+};
+
+static struct mx_sif_client lf;
+static struct lf_load_arg lf_arg MX_ALIGNED(64);
+static s32 lf_result[4] MX_ALIGNED(64);
+
+int mx_iop_load_module(const char *path) {
+  if ((!mx_sif_ready() && mx_sif_init() < 0) || (!lf.server && mx_sif_bind(&lf, LOADFILE_SID) < 0))
+    return -1;
+  u32 i = 0;
+  for (; path[i] && i < sizeof lf_arg.path - 1; i++)
+    lf_arg.path[i] = path[i];
+  lf_arg.path[i] = 0;
+  lf_arg.result = 0;
+  lf_arg.modres = 0;
+  volatile s32 *r = MX_UNCACHED(lf_result);
+  if (mx_sif_call(&lf, 0, &lf_arg, sizeof lf_arg, (void *)r, 8) < 0)
+    return -1;
+  return r[0];
+}
+
 /* ---- tty ---------------------------------------------------------------- */
 
 struct fio_write_arg {
@@ -284,18 +320,23 @@ static struct fio_write_arg wr_arg MX_ALIGNED(64);
 static u32 wr_result[4] MX_ALIGNED(64);
 static char wr_data[1024] MX_ALIGNED(64);
 
-int mx_tty_write(const char *s, u32 n) {
-  if (!fio.server) {
-    if (mx_sif_init() < 0 || mx_sif_bind(&fio, FILEIO_SID) < 0)
-      return -1;
-  }
+static int fio_bind(void) {
+  if (!fio.server && (mx_sif_init() < 0 || mx_sif_bind(&fio, FILEIO_SID) < 0))
+    return -1;
+  return 0;
+}
+
+int mx_fio_write(int fd, const void *data, u32 n) {
+  if (fio_bind() < 0)
+    return -1;
+  const char *s = data;
   while (n) {
     u32 len = n > sizeof wr_data ? sizeof wr_data : n;
     char *d = MX_UNCACHED(wr_data);
     for (u32 i = 0; i < len; i++)
       d[i] = s[i];
     struct fio_write_arg *a = MX_UNCACHED(&wr_arg);
-    a->fd = 1;
+    a->fd = fd;
     a->ptr = (u32)(uintptr_t)d;
     a->size = len;
     a->mis = 0;
@@ -305,4 +346,39 @@ int mx_tty_write(const char *s, u32 n) {
     n -= len;
   }
   return 0;
+}
+
+int mx_tty_write(const char *s, u32 n) { return mx_fio_write(1, s, n); }
+
+/* The open arguments of the file server: flags, then the path. */
+static struct {
+  s32 flags;
+  char path[256];
+} op_arg MX_ALIGNED(64);
+
+int mx_fio_open(const char *path, int flags) {
+  if (fio_bind() < 0)
+    return -1;
+  __typeof__(op_arg) *a = MX_UNCACHED(&op_arg);
+  a->flags = flags;
+  u32 i = 0;
+  for (; path[i] && i < sizeof a->path - 1; i++)
+    a->path[i] = path[i];
+  a->path[i] = 0;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_OPEN, a, sizeof *a, (void *)r, 4) < 0)
+    return -1;
+  return r[0];
+}
+
+int mx_fio_close(int fd) {
+  if (fio_bind() < 0)
+    return -1;
+  static s32 cl_arg[4] MX_ALIGNED(64);
+  volatile s32 *a = (volatile s32 *)MX_UNCACHED(cl_arg);
+  a[0] = fd;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_CLOSE, (void *)a, 16, (void *)r, 4) < 0)
+    return -1;
+  return r[0];
 }

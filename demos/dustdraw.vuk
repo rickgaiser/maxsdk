@@ -1,0 +1,27 @@
+// procgen dust (PLAN_PROCGEN P4), drawn: each mote (demos/dust.vuk, box
+// units 0..1) is moved into the box of size box.w laid around the eye, and
+// drawn as a small fogged, alpha-blended sprite. A mote near the eye or
+// reaching out of the guard band is not drawn (ADC on its second vertex).
+shader dustdraw {
+    uniform mvp: f32x4[4];  // for the box's corner (x, z) at y = 0
+    uniform fogc: f32x4;
+    uniform box: f32x4;     // xyz: the box's corner in box units, w: its size
+    uniform ext: f32x4;     // x: the corner's height, y, z: half size in pixels at w = 1
+    uniform col: f32x4;     // colour 0..255, alpha in w
+    uniform clip: f32x4;    // x: the centre of the screen, y: guard band, z: the nearest w
+    in pos: v4_32;
+    var q = pos - box;
+    q = q - floor(q);
+    var wp = q * box.w;
+    var p = mvp[0] * wp.x + mvp[1] * (wp.y + ext.x) + mvp[2] * wp.z + mvp[3];
+    var r = rcp(p.w);
+    var c = p * r;
+    var fog = clamp(p.w * fogc.x + fogc.y, 0, 255);
+    var hw = r * ext.y;
+    var hh = r * ext.z;
+    var ex = max(max(abs(c.x - clip.x) + hw, abs(c.y - clip.x) + hh) - clip.y, clip.z - p.w);
+    var adc = clamp(ex * 1000000000, 0, 2048);
+    out rgbaq = ftoi0(col);
+    out xyzf2 = ftoi4(vec(c.x - hw, c.y - hh, c.z, fog));
+    out xyzf2 = ftoi4(vec(c.x + hw, c.y + hh, c.z, fog + adc));
+}

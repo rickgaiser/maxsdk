@@ -98,7 +98,7 @@ static void fence_sleep(int main_prio) {
 
 int main(void) {
   mx_dma_init();
-  MX_R32(MX_VIF_VIF1_FBRST) = 1;
+  mx_vif_reset(1);
   int self = mx_thread_self(), prio = mx_thread_prio(self);
   mx_printf("thread: main thread %d, priority %d\n", self, prio);
   if (prio < 2 || prio > 120) {

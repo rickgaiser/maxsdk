@@ -245,6 +245,8 @@ SYSCALLS = [
     ("mx_bios_reset_ee", 0x01, "void (int flags)"),
     ("mx_bios_set_gs_crt", 0x02, "void (int interlace, int mode, int ffmd)"),
     ("mx_bios_exit", 0x04, "void (int status) __attribute__((noreturn))"),
+    ("mx_bios_set_tlb_handler", 0x0D, "void *(int code, void (*handler)(void))"),
+    ("mx_bios_set_common_handler", 0x0E, "void *(int code, void (*handler)(void))"),
     ("mx_bios_add_intc_handler", 0x10, "int (int cause, int (*handler)(int cause, void *arg, void *addr), int next, void *arg)"),
     ("mx_bios_remove_intc_handler", 0x11, "int (int cause, int id)"),
     ("mx_bios_add_dmac_handler", 0x12, "int (int channel, int (*handler)(int channel, void *arg, void *addr), int next, void *arg)"),

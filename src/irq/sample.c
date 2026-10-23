@@ -26,6 +26,8 @@ u32 mx_trace_units(void) {
     s |= MX_TS_VU0;
   if (vpu & MX_VPU_VBS1)
     s |= MX_TS_VU1;
+  if (vpu & MX_VPU_VGW1)
+    s |= MX_TS_VU1GW;
   if (MX_GET(GIF_STAT_APATH, MX_R32(MX_GIF_STAT)))
     s |= MX_TS_PATH;
   if (MX_GET(GS_CSR_FIFO, MX_R64(MX_GS_CSR)) != 1)

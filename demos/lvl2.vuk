@@ -1,0 +1,18 @@
+// Quality level 2 (PLAN_PROCGEN): level 1 textured, perspective correct. The
+// texture coordinates are V2-16 in 4.12 fixed point.
+shader lvl2 {
+    uniform mvp: f32x4[4];
+    uniform light: f32x4;
+    uniform lcol: f32x4;
+    uniform amb: f32x4;
+    in pos: v3_32;
+    in nrm: v4_8;
+    in col: v4_8u;
+    in uv: v2_16;
+    var p = mvp[0] * pos.x + mvp[1] * pos.y + mvp[2] * pos.z + mvp[3];
+    var q = rcp(p.w);
+    var d = max(dot3(itof0(nrm), light), 0);
+    out st = with_z(itof12(uv) * q, q);
+    out rgbaq = ftoi0(min(itof0(col) * (amb + lcol * d), 255)); // 255: RGBAQ keeps 8 bits
+    out xyz2 = ftoi4(p * q);
+}

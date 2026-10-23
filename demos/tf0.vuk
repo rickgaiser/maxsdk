@@ -1,0 +1,12 @@
+// procgen terrain, far (quality level 0 with fog): position V3-32, colour
+// V4-8 (0..255) to RGBAQ, fog by depth.
+shader tf0 {
+    uniform mvp: f32x4[4];
+    uniform fogc: f32x4;    // fog = clamp(w * x + y, 0, 255): 255 none, 0 all fog
+    in pos: v3_32;
+    in col: v4_8u;
+    var p = mvp[0] * pos.x + mvp[1] * pos.y + mvp[2] * pos.z + mvp[3];
+    var fog = clamp(p.w * fogc.x + fogc.y, 0, 255);
+    out rgbaq = col;
+    out xyzf2 = ftoi4(with_w(p / p.w, fog));
+}

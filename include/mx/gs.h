@@ -26,6 +26,12 @@ struct mx_gs {
   volatile u32 missed;    /* a frame was submitted but its FINISH had not come (GS late) */
   volatile u32 starved;   /* no frame was submitted (EE late) */
   volatile int counting;  /* count missed/starved vblanks (between the first and last frame) */
+  u32 first;              /* the first frame of the frame pipeline's run: the vblanks are
+                             counted once it is shown (its vblank comes at any time) */
+  volatile int immediate; /* show each frame at its FINISH, not at the next vblank */
+  volatile u32 finish_at; /* mx_count() at the last FINISH */
+  volatile u32 slack;     /* EE cycles from the FINISH of the frame shown last to its vblank:
+                             how early it was ready (vsync on) */
 };
 
 extern struct mx_gs mx_gs;
@@ -113,5 +119,11 @@ MX_INLINE u64 *mx_gs_e_regs_close(u64 *tag, u64 *c, int eop) {
    blocks: use MX_GS_PAGE(fbp)), bw in 64-pixel units. dst (uncached or cached; it is invalidated). w * h * 4 must be
    a multiple of 128 bytes. Blocking. */
 int mx_gs_download(void *dst, u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 h);
+
+/* Save framebuffer buf (0/1) as a TGA file through the IOP file server
+   (mx_fio_open), e.g. "host:shot.tga"; each field line is written twice, so
+   the picture has the shape of the display. Blocking, slow (seconds).
+   Returns 0, or -1. */
+int mx_gs_save_tga(int buf, const char *path);
 
 #endif

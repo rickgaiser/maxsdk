@@ -180,7 +180,8 @@ int main(void) {
             build_cycles / FRAMES, mx_frame_stats.wait_buffer / FRAMES,
             mx_frame_stats.wait_ring / FRAMES);
   static const char *units[MX_TS_N] = {"VIF0 DMA", "VIF1 DMA", "GIF DMA",  "fromSPR", "toSPR",
-                                       "VU0",      "VU1",      "GIF path", "GS FIFO"};
+                                       "VU0",      "VU1",      "GIF path", "GS FIFO",
+                                       "VU1 GIF wait"};
   for (int u = 0; u < MX_TS_N; u++)
     if (u != 0 && u != 5)
       mx_printf("scene: busy %-8s %3u%% of %u samples\n", units[u], ns ? busy[u] * 100 / ns : 0, ns);

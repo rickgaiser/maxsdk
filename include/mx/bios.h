@@ -13,6 +13,8 @@ extern "C" {
 void mx_bios_reset_ee(int flags);
 void mx_bios_set_gs_crt(int interlace, int mode, int ffmd);
 void mx_bios_exit(int status) __attribute__((noreturn));
+void * mx_bios_set_tlb_handler(int code, void (*handler)(void));
+void * mx_bios_set_common_handler(int code, void (*handler)(void));
 int mx_bios_add_intc_handler(int cause, int (*handler)(int cause, void *arg, void *addr), int next, void *arg);
 int mx_bios_remove_intc_handler(int cause, int id);
 int mx_bios_add_dmac_handler(int channel, int (*handler)(int channel, void *arg, void *addr), int next, void *arg);
