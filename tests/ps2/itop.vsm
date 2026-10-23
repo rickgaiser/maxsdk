@@ -1,0 +1,7 @@
+; VU0: store ITOP (xitop) into data memory quadword 10, x field.
+	.section .vutext, "ax", @progbits
+	nop		xitop vi1
+	nop		nop
+	nop		isw.x vi1, 10(vi0)
+	nop[e]		nop
+	nop		nop

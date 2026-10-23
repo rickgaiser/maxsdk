@@ -1,0 +1,7 @@
+; VU1: stop with the D bit (an interrupt when FBRST.DE1 is set). The E bit
+; after it ends the program where the D bit is not honoured (PCSX2).
+	.section .vutext, "ax", @progbits
+	nop[d]		nop
+	nop		nop
+	nop[e]		nop
+	nop		nop

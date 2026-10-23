@@ -1,0 +1,22 @@
+{
+  "name": "ps2-vsm",
+  "displayName": "PS2 VU Assembly",
+  "description": "Syntax highlighting for PS2 VU0/VU1 micro-mode assembly (.vsm)",
+  "version": "0.0.1",
+  "publisher": "maxsdk",
+  "engines": { "vscode": "^1.60.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "vsm",
+      "aliases": ["PS2 VU Assembly", "vsm"],
+      "extensions": [".vsm", ".vcl"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "vsm",
+      "scopeName": "source.vsm",
+      "path": "./syntaxes/vsm.tmLanguage.json"
+    }]
+  }
+}

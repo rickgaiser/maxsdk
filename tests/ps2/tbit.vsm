@@ -1,0 +1,4 @@
+; VU1: stop with the T bit (an interrupt when FBRST.TE1 is set).
+	.section .vutext, "ax", @progbits
+	nop[t]		nop
+	nop		nop

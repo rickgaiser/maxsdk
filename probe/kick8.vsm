@@ -1,0 +1,13 @@
+; VU1: XGKICK 8 GIF packets of 4 quadwords each, at 0, 4, ..., 28.
+	.section .vutext, "ax", @progbits
+	nop		iaddiu vi1, vi0, 0
+	nop		iaddiu vi2, vi0, 8
+loop:
+	nop		xgkick vi1
+	nop		iaddiu vi1, vi1, 4
+	nop		isubiu vi2, vi2, 1
+	nop		nop
+	nop		ibne vi2, vi0, loop
+	nop		nop
+	nop[e]		nop
+	nop		nop

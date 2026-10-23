@@ -1,0 +1,94 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "PS2 VU Assembly",
+  "scopeName": "source.vsm",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#labels" },
+    { "include": "#directives" },
+    { "include": "#upper" },
+    { "include": "#lower" },
+    { "include": "#registers" },
+    { "include": "#numbers" },
+    { "include": "#symbols" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.semicolon.vsm", "match": ";.*$" },
+        { "name": "comment.block.vsm", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.vsm",
+      "begin": "\"", "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.vsm", "match": "\\\\." }]
+    },
+    "labels": {
+      "match": "^\\s*([A-Za-z_.$][A-Za-z0-9_.$]*)(:)",
+      "captures": {
+        "1": { "name": "entity.name.function.label.vsm" },
+        "2": { "name": "punctuation.separator.vsm" }
+      }
+    },
+    "directives": {
+      "match": "(?<![\\w.$])\\.[A-Za-z_][A-Za-z0-9_]*\\b",
+      "name": "keyword.control.directive.vsm"
+    },
+    "upper": {
+      "comment": "Upper (FMAC) instructions, with optional .dest field and [e|d|t|i|o] flag bits",
+      "match": "(?i)\\b((?:add|sub|mul|madd|msub)a?(?:i|q|x|y|z|w)?|(?:max|mini)(?:i|x|y|z|w)?|abs|opmula|opmsub|clipw?|ftoi(?:0|4|12|15)|itof(?:0|4|12|15)|nop)(\\.[xyzw]{1,4})?((?:\\[[edtio]\\])*)(?=\\s|$)",
+      "captures": {
+        "1": { "name": "keyword.other.instruction.upper.vsm" },
+        "2": { "name": "support.type.dest.vsm" },
+        "3": { "name": "storage.modifier.flag.vsm" }
+      }
+    },
+    "lower": {
+      "comment": "Lower instructions; branches/jumps are highlighted as control flow",
+      "patterns": [
+        {
+          "match": "(?i)\\b(b|bal|ibeq|ibne|ibgez|ibgtz|iblez|ibltz|jr|jalr)\\b",
+          "name": "keyword.control.branch.vsm"
+        },
+        {
+          "match": "(?i)\\b(div|sqrt|rsqrt|waitq|waitp|eatan(?:xy|xz)?|eexp|eleng|ercpr|erleng|ersadd|ersqrt|esadd|esin|esqrt|esum|fcand|fceq|fcget|fcor|fcset|fmand|fmeq|fmor|fsand|fseq|fsor|fsset|iadd|iaddi|iaddiu|iand|ior|isub|isubiu|ilw|ilwr|isw|iswr|loi|lq|lqd|lqi|sq|sqd|sqi|mfir|mtir|mfp|move|mr32|rget|rinit|rnext|rxor|xgkick|xitop|xtop)(\\.[xyzw]{1,4})?(?=\\s|$)",
+          "captures": {
+            "1": { "name": "keyword.other.instruction.lower.vsm" },
+            "2": { "name": "support.type.dest.vsm" }
+          }
+        }
+      ]
+    },
+    "registers": {
+      "patterns": [
+        {
+          "match": "(?i)\\b(vf(?:[12]?[0-9]|3[01]))(\\.[xyzw]{1,4})?\\b",
+          "captures": {
+            "1": { "name": "variable.language.register.vf.vsm" },
+            "2": { "name": "support.type.field.vsm" }
+          }
+        },
+        { "match": "(?i)\\bvi(?:[0-9]|1[0-5])\\b", "name": "variable.language.register.vi.vsm" },
+        { "match": "(?i)\\b(acc|i|q|p|r)(\\.[xyzw]{1,4})?\\b(?!\\s*:)",
+          "captures": {
+            "1": { "name": "variable.language.register.special.vsm" },
+            "2": { "name": "support.type.field.vsm" }
+          }
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "match": "(?<![\\w.])-?0[xX][0-9A-Fa-f]+\\b", "name": "constant.numeric.hex.vsm" },
+        { "match": "(?<![\\w.])-?0[bB][01]+\\b", "name": "constant.numeric.binary.vsm" },
+        { "match": "(?<![\\w.])-?[0-9]+(?:\\.[0-9]+)?(?:[eE][-+]?[0-9]+)?\\b", "name": "constant.numeric.decimal.vsm" }
+      ]
+    },
+    "symbols": {
+      "match": "@[A-Za-z_]+\\b",
+      "name": "support.constant.vsm"
+    }
+  }
+}

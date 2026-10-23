@@ -1,0 +1,17 @@
+; Double-buffered doubling kernel for VU0: the buffer is at xitop, its
+; quadword 0 holds the item count (x), the items follow.
+	.section .vutext, "ax", @progbits
+	nop		xitop vi2
+	nop		nop
+	nop		ilw.x vi1, 0(vi2)
+	nop		iaddiu vi2, vi2, 1
+loop:
+	nop		lq.xyzw vf1, 0(vi2)
+	add.xyzw vf1, vf1, vf1	nop
+	nop		isubiu vi1, vi1, 1
+	nop		sq.xyzw vf1, 0(vi2)
+	nop		iaddiu vi2, vi2, 1
+	nop		ibne vi1, vi0, loop
+	nop		nop
+	nop[e]		nop
+	nop		nop

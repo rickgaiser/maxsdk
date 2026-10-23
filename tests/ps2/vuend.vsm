@@ -1,0 +1,4 @@
+; VU1: stop at once (used to let MSCAL swap the VIF1 double buffer).
+	.section .vutext, "ax", @progbits
+	nop[e]		nop
+	nop		nop

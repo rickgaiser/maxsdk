@@ -1,0 +1,7 @@
+; VU1: send the GIF packet at the current double buffer (xtop) over PATH1.
+	.section .vutext, "ax", @progbits
+	nop		xtop vi1
+	nop		nop
+	nop		xgkick vi1
+	nop[e]		nop
+	nop		nop

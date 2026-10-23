@@ -1,0 +1,9 @@
+; VU1: send the GIF packet at VU1 data address 0 over PATH1, then stop.
+	.section .vutext, "ax", @progbits
+	.globl kick_vu
+kick_vu:
+	nop		xgkick vi0
+	nop[e]		nop
+	nop		nop
+	.globl kick_vu_end
+kick_vu_end:
