@@ -20,6 +20,11 @@
 | sw → sqc2 forwarding | 3.5 |
 | Unaligned load to vadd | 9 (ldl/ldr + pcpyld + qmtc2) vs 11 via the stack |
 | vftoi0 / vitof0 / vmr32 | latency 4, 1 per cycle |
+| vopmula → vopmsub → vopmula (cross product) | 5 (`bench/uarch_tests.c`, 2026-10-24) |
+| vclipw | 1 per cycle |
+| ACC ↔ VF copy (vmulaw acc, s, vf0w; vmsubx d, vf0, vf0x) | 5 round trip |
+| vmove; vmove.x then vmove.xyzw of the same register | 4; 5 (the merge waits only for its field) |
+| v4f32 select(a < b, x, y): MMI compare (clang) vs VU mask `clamp((b-a)·2^127)` + VMULA/VMADD blend | latency 17 vs 21, throughput 15.4 vs 18.1: the MMI path stays |
 
 ## Micro mode
 
@@ -35,7 +40,32 @@
 | VIF0 ITOP read by VU0 with `xitop`, MPG upload to VU0 through VIF0 | work | `tests/ps2/vu.c` | 2026-10-23 |
 | The assembler rejects `lqc2`/`sqc2`/`vcallms`/`cfc2.i` without `-mvu0`; they are encoded as `.word` (vcallms 0x4a000038, cfc2.i 0x4848e801) | | `bench/vudemo/vu.h` | 2026-10-23 |
 
-Micro-mode instruction latencies are not measured yet; the VU target's model uses the manual's.
+### Micro-mode instruction timing (PS2, 2026-10-24, `bench/vuuarch`)
+
+Each probe body is unrolled 4 and 12 times in a VU loop; the difference of
+the EE cycle counts gives the cycles per body (EE and VU share one clock).
+
+| Fact | Value |
+|---|---|
+| FMAC result (ADD, MUL, MADD, bc forms, ADDi, ADDq, MAX, MINI, ABS, FTOI0/ITOF0) → FMAC | 4, interlocked |
+| MOVE, MR32 (lower) → use | 4 |
+| Dependences are tracked per field | ADD.x/.y/.z/.w on one register: 4 chains, 1 per cycle |
+| ACC → ACC (MADDA chain), MULA → MADD | 1 |
+| OPMULA → OPMSUB → OPMULA | 5 (1 + 4) |
+| DIV, SQRT throughput; RSQRT | 7; 13. One divider: DIV then RSQRT 20; FMAC runs on during a divide |
+| Q after DIV | **not interlocked**: a read up to 6 words after DIV sees the old Q, from 7 words the new; DIV, WAITQ, DIV 8; DIV → WAITQ → ADDq → DIV 12 |
+| MAC flags (FMAND) and clip flags (FCAND, FCGET) | **not interlocked**: stale up to 3 words after the FMAC/CLIP, current from 4; no stall |
+| LOI → ADDi | 1; an ADDi in the LOI's own word reads the old I |
+| IADD, IADDIU → integer use | 1; IADD → MFIR 1 |
+| ILW → address use, LQ → FMAC | 4 |
+| ADD → SQ → LQ → ADD | 9 (store → load at the same address 1) |
+| MTIR → MFIR → MTIR | 5 |
+| Taken B: branch + delay slot + target | 3 words, no penalty |
+| IBNE in the word right after the instruction that writes its VI | **reads the old VI** (the value before the writes of the last ~4 words, as PCSX2's `analyzeBranchVI`), no stall; one word later the new VI |
+| VU1 EFU, issue → WAITP done (DIV's convention: DIV, WAITQ = 8 = 7 + 1) | ESADD 10, ESQRT/ESUM/ERCPR 11, ERSADD/ELENG/ERSQRT 17, ERLENG 23, ESIN 28, EEXP 43, EATAN 53 (all 1 below the VU target's table); ERCPR throughput 11 |
+| EFU and FDIV | run in parallel: ERCPR + DIV with both waits 12 |
+
+PCSX2 gives the same values for all value checks (Q, flags, branch VI).
 
 ## Phase 5 (PS2, 2026-10-23)
 
