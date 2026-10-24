@@ -1,6 +1,6 @@
 // procgen dust (PLAN_PROCGEN P4): motes that drift in a wind field, on VU0,
 // every frame. x[i]: the position in box units (xyz, wrapped to 0..1; the box
-// is laid around the eye when drawn, demos/dustdraw.hlsl), w: the mote's own
+// is laid around the eye when drawn, demos/procgen/dustdraw.hlsl), w: the mote's own
 // phase. The wind is a swirl that changes with the place and the time, so
 // the motes follow their own paths: a state that VU0 carries from frame to
 // frame, not a function of the time alone.

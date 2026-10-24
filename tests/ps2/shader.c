@@ -1,5 +1,5 @@
 /* HLSL shaders (PLAN_PROCGEN P2): single batches of the quality-level shaders
-   (demos/lvl0-3.hlsl) through VIF1, for every vertex count of a batch (each
+   (demos/procgen/lvl0-3.hlsl) through VIF1, for every vertex count of a batch (each
    takes its own way through the compiled loop: the unrolled kernel, the
    stages before and after it, the loop for the rest), read back from VU1
    memory and compared with the same math on the EE. */

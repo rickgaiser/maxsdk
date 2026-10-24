@@ -13,7 +13,7 @@ make check-deps      # fails if anything references ps2sdk
 make gen             # regenerate include/mx/hw/*.h, include/mx/bios.h, src/base/syscalls.S
 ```
 
-VU programs are HLSL (`demos/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
+VU programs are HLSL (`demos/*/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
 
 Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with
 `ps2client -h 192.168.1.10 execee host:<elf>`. Every test ends with `@@PS2TEST_END@@ status=N`.
@@ -34,11 +34,11 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | 0 | repo, generator (`gen/`), host tests, `docs/` | `make test-host` |
 | 1 | crt0, linker script, BIOS syscall stubs, mini C runtime, printf, SIF tty client | `tests/ps2/hello.c` |
 | 2 | interrupt dispatcher, DMA in every mode, MFIFO, stall control, interrupt-refilled queues + fences, timers, trace | `tests/ps2/dma.c`, `probe/p2_dma.c` |
-| 3 | DMA/VIF/GIF packet builder, GS setup, FINISH/SIGNAL/vsync, frame loop, upload, readback | `tests/ps2/gs.c`, `tests/ps2/vif.c`, `probe/p3_gs.c`, `demos/spin.c` |
+| 3 | DMA/VIF/GIF packet builder, GS setup, FINISH/SIGNAL/vsync, frame loop, upload, readback | `tests/ps2/gs.c`, `tests/ps2/vif.c`, `probe/p3_gs.c`, `demos/spin/spin.c` |
 | 4 | VU reset/control, COP2 transfers, microcode residency, kernels + queues, double buffering, T-bit, DMA readback | `tests/ps2/vu.c`, `probe/p4_vu.c`, `bench/vudemo` |
 | 5 | cursor emitters (`<mx/emit.h>`), MPG by ref tags, polled MARK waits, VU0 DMA readback, unit-state sampling, vuk launch parameters | `tests/host/test_emit.c`, `tests/ps2/vu.c`, `probe/p5_fast.c` |
-| 6 | render pipeline (`<mx/frame.h>`): MFIFO-fed VIF1 stream, VU1 render kernel with double buffering + XGKICK, PATH3 textures, GS register cache, vblank accounting, VU1 compute between passes | `tests/ps2/frame.c`, `demos/scene.c`, `demos/spin.c` |
-| 7 | `mx_sched` (`<mx/sched.h>`): pollers, pools, VU workers; all units at once | `demos/allunits.c`, `bench/vudemo` (sched) |
+| 6 | render pipeline (`<mx/frame.h>`): MFIFO-fed VIF1 stream, VU1 render kernel with double buffering + XGKICK, PATH3 textures, GS register cache, vblank accounting, VU1 compute between passes | `tests/ps2/frame.c`, `demos/scene/scene.c`, `demos/spin/spin.c` |
+| 7 | `mx_sched` (`<mx/sched.h>`): pollers, pools, VU workers; all units at once | `demos/allunits/allunits.c`, `bench/vudemo` (sched) |
 | 8 | threads and semaphores on fences (`<mx/thread.h>`), picolibc + glue (`libc/`), compiler-rt builtins, a minimal C++ runtime, ps2sdk compat headers for bench (`compat/`) | `tests/ps2/thread.c`, `tests/libc/libc.c`, `tests/libc/cxx.cc`, `bench` (`SDK=maxsdk`) |
 
 ## Layout

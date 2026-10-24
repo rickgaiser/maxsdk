@@ -17,10 +17,10 @@ Correctness notes only. PCSX2 (flatpak 2.5.x) timings are never performance data
 | VIF0 chain with tags written uncached (isolated probe) | starts, data ok | starts, data ok | maxsdk `probe/p2_dma.c` |
 | Reading VU memory while the VU runs | wrong data | correct data | maxsdk `tests/ps2/vu.c` |
 | VU1 D bit with FBRST.DE1 | hangs the PS2 | ignored | maxsdk `tests/ps2/dbit.c` |
-| spin demo, 120 frames | 146 vsyncs | 119 vsyncs | maxsdk `demos/spin.c` |
+| spin demo, 120 frames | 146 vsyncs | 119 vsyncs | maxsdk `demos/spin/spin.c` |
 | A second SIGNAL before CSR.SIGNAL is cleared (GS interrupts masked) | the same: the GS stops until CSR.SIGNAL is written | the GS stops at the second SIGNAL (SIGID 0x11, the LABEL after it not yet set) and goes on once CSR.SIGNAL is written | maxsdk `probe/p5_fast.c` |
 | Stall control, normal-mode VIF1 drain (`probe/p5_fast.c` stall_normal) | the drain waits; data correct | the drain does not wait: 28 of 28 words wrong | maxsdk `probe/p5_fast.c` |
-| Timing of everything in phases 5-7 (frame pipeline, mx_sched, sampling) | | DMA, VU and GS work finish almost at once: busy shares read 0 %, there are no missed vblanks | maxsdk `demos/scene.c`, `demos/allunits.c` |
+| Timing of everything in phases 5-7 (frame pipeline, mx_sched, sampling) | | DMA, VU and GS work finish almost at once: busy shares read 0 %, there are no missed vblanks | maxsdk `demos/scene/scene.c`, `demos/allunits/allunits.c` |
 
 ## PLAN_PROCGEN (PS2 and PCSX2 2.5, 2026-10-23/24)
 
@@ -32,8 +32,8 @@ Correctness notes only. PCSX2 (flatpak 2.5.x) timings are never performance data
 | procgen's dust: the box wrap `q − floor(q)` of negative values | wrong (all motes out of view, none drawn) | right | `tests/ps2/dust.c` |
 | fBm noise on VU0 against the EE, 6 octaves (before the two rows above were handled) | 1022 of 1089 samples agree | 66 of 1089 | `tests/ps2/noise.c` |
 | The same with exact copies (LLVM) and the exact floor (vuk) | 1089 of 1089 | 1089 of 1089 | `tests/ps2/noise.c` |
-| A load through a bad pointer (procgen, address 0x1a8, from an LLVM miscompile) | TLB miss exception | reads low memory, the program goes on | `demos/procgen.c`, exception report |
+| A load through a bad pointer (procgen, address 0x1a8, from an LLVM miscompile) | TLB miss exception | reads low memory, the program goes on | `demos/procgen/procgen.c`, exception report |
 | A load from address 0x2 (misaligned) | not measured | no exception, returns 0 | scratch test of `src/base/exception.c` |
 | GS SPRITE with UV at texel edges, 1:1 (the font) | the last column and row of each glyph are not drawn; UV + 8 (half a texel) draws them | drawn either way | procgen screenshots |
-| Debug output of a line written in several writes, or the first lines when the SIF is first used in the middle of GS/DMA set-up | pieces lost (ps2link's udptty: one UDP broadcast per write) | nothing lost | `demos/levels.c`, `demos/procgen.c` |
-| procgen max count (no vsync) | 192 fps, 20.5 M vertices/s, VU1 99 % | 290 fps; busy shares 0 % | `demos/procgen.c` (PCSX2 timings are not data) |
+| Debug output of a line written in several writes, or the first lines when the SIF is first used in the middle of GS/DMA set-up | pieces lost (ps2link's udptty: one UDP broadcast per write) | nothing lost | `demos/procgen/levels.c`, `demos/procgen/procgen.c` |
+| procgen max count (no vsync) | 192 fps, 20.5 M vertices/s, VU1 99 % | 290 fps; busy shares 0 % | `demos/procgen/procgen.c` (PCSX2 timings are not data) |

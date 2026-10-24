@@ -1,8 +1,8 @@
 /* PLAN_PROCGEN P4: a flight over generated terrain, every unit at work, at
    640 x 448 and 60 fields a second.
-     - VU0 makes the terrain heights (demos/fbm.hlsl), chunk after chunk, as
+     - VU0 makes the terrain heights (demos/procgen/fbm.hlsl), chunk after chunk, as
        the camera needs them (the chunks in the view cone), and moves the
-       dust (demos/dust.hlsl), through a VIF0 queue;
+       dust (demos/procgen/dust.hlsl), through a VIF0 queue;
      - the EE builds each chunk's vertex streams (normals, colour by height
        and slope, texture coordinates, a half resolution level and the edges
        that fill its cracks, trees) after a frame is queued, culls the chunks
@@ -246,7 +246,7 @@ static int gen_build(void) {
 
 /* ---- dust on VU0 ----------------------------------------------------------- */
 
-/* Motes in box units (demos/dust.hlsl), moved by VU0 once a frame through the
+/* Motes in box units (demos/procgen/dust.hlsl), moved by VU0 once a frame through the
    VIF0 queue of the heights, between their batches (VU0's data memory holds
    one batch). fbm and dust do not fit VU0's 4 KiB of micro memory together:
    both are at 0, and the queue sends the code of a batch's kernel with it

@@ -1,4 +1,4 @@
-/* PLAN_PROCGEN P1: the cost of each quality level (demos/lvl0-3.hlsl) on the
+/* PLAN_PROCGEN P1: the cost of each quality level (demos/procgen/lvl0-3.hlsl) on the
    PS2. Terrain patches of 33 x 33 vertices, each one triangle strip (the rows
    joined by two repeated vertices, which make degenerate triangles), drawn
    by the frame pipeline without vsync. Two scenes:

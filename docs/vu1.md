@@ -29,7 +29,7 @@ the PS2.)
 Compiled by vuk (`tools/vuk`, shader mode) and llc (VU target, feature tree), double-buffered
 through the frame pipeline (`mx_frame_shader_draw`). Terrain patches of 33 x 33 vertices as one
 strip each (2174 vertices, 124 degenerate join triangles), 64 patches (A, ~2 px triangles) or
-16 patches (B, ~17 px, overdrawn), no vsync (`demos/levels.c`). EE cycles.
+16 patches (B, ~17 px, overdrawn), no vsync (`demos/procgen/levels.c`). EE cycles.
 
 | Level | Per vertex | Loop of the kernel (static) | Measured A | Measured B | Busy (A) |
 |---|---|---|---|---|---|
@@ -56,4 +56,4 @@ Later (PLAN_PROCGEN P4/P5, PS2, 2026-10-23), same measurement:
 
 | Fact | Value | Conditions | Source | Date |
 |---|---|---|---|---|
-| VU1 waiting at XGKICK for the GIF (VPU-STAT.VGW1, sampled as `MX_TS_VU1GW`) | 0–6 % of the time for small triangles (A), 3–14 % with larger ones (B); 6 % in procgen's max count | | `demos/levels.c`, `demos/procgen.c` | 2026-10-23 |
+| VU1 waiting at XGKICK for the GIF (VPU-STAT.VGW1, sampled as `MX_TS_VU1GW`) | 0–6 % of the time for small triangles (A), 3–14 % with larger ones (B); 6 % in procgen's max count | | `demos/procgen/levels.c`, `demos/procgen/procgen.c` | 2026-10-23 |

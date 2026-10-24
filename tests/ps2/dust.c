@@ -1,4 +1,4 @@
-/* procgen's dust shader (demos/dustdraw.hlsl): single batches of every size
+/* procgen's dust shader (demos/procgen/dustdraw.hlsl): single batches of every size
    through VIF1, read back from VU1 memory and compared with the same math
    on the EE: the two sprite corners, and the ADC bit of the second (a mote
    near the eye or reaching out of the guard band is not drawn). The motes

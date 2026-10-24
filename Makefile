@@ -34,11 +34,15 @@ LIB       = $(OUT)/libmx.a
 CRT0      = $(OUT)/obj/crt0.o
 HDRS     := $(wildcard $(HERE)/include/mx/*.h $(HERE)/include/mx/hw/*.h)
 
+# Each demo has a directory in demos/ (demos/common: VU code that several
+# use); program and VU program names are unique over all of them.
+DEMO_DIRS := $(patsubst %/,%,$(wildcard $(HERE)/demos/*/))
+
 # VU microcode (*.vsm, assembled by llvm-mc -triple=vu): each becomes an EE
 # object with the code between the symbols <name>_vu and <name>_vu_end.
-VSMS     := $(wildcard $(HERE)/tests/ps2/*.vsm $(HERE)/probe/*.vsm $(HERE)/demos/*.vsm)
+VSMS     := $(wildcard $(HERE)/tests/ps2/*.vsm $(HERE)/probe/*.vsm $(HERE)/demos/*/*.vsm)
 VU_OBJS  := $(patsubst %.vsm,$(OUT)/vu/%.o,$(notdir $(VSMS)))
-vpath %.vsm $(HERE)/tests/ps2 $(HERE)/probe $(HERE)/demos
+vpath %.vsm $(HERE)/tests/ps2 $(HERE)/probe $(DEMO_DIRS)
 
 $(OUT)/vu/%.vu.elf: %.vsm
 	@mkdir -p $(dir $@)
@@ -57,11 +61,11 @@ $(OUT)/vu/%.o: $(OUT)/vu/%.bin
 # from section .vu.header, wrapped like the microcode above. HLSL_VU0 lists
 # the programs for VU0; the others run on VU1. (-Wno-deprecated-builtins:
 # clang's own HLSL headers use them for max and min.)
-HLSLS     := $(wildcard $(HERE)/tests/ps2/*.hlsl $(HERE)/demos/*.hlsl)
+HLSLS     := $(wildcard $(HERE)/tests/ps2/*.hlsl $(HERE)/demos/*/*.hlsl)
 HLSL_OBJS := $(patsubst %.hlsl,$(OUT)/hlsl/%.o,$(notdir $(HLSLS)))
 HLSL_HDRS := $(patsubst %.hlsl,$(OUT)/hlsl/%.h,$(notdir $(HLSLS)))
 HLSL_VU0  := fbm dust floor nest
-vpath %.hlsl $(HERE)/tests/ps2 $(HERE)/demos
+vpath %.hlsl $(HERE)/tests/ps2 $(DEMO_DIRS)
 CFLAGS   += -I$(OUT)/hlsl
 VU_CPU    = $(if $(filter $*,$(HLSL_VU0)),vu0,vu1)
 
@@ -92,7 +96,9 @@ $(OUT)/hlsl/%.o: $(OUT)/hlsl/%.bin
 
 TESTS    := $(patsubst $(HERE)/tests/ps2/%.c,$(OUT)/tests/%.elf,$(wildcard $(HERE)/tests/ps2/*.c))
 PROBES   := $(patsubst $(HERE)/probe/%.c,$(OUT)/probe/%.elf,$(wildcard $(HERE)/probe/*.c))
-DEMOS    := $(patsubst $(HERE)/demos/%.c,$(OUT)/demos/%.elf,$(wildcard $(HERE)/demos/*.c))
+DEMO_SRCS := $(wildcard $(HERE)/demos/*/*.c)
+DEMOS    := $(patsubst %.c,$(OUT)/demos/%.elf,$(notdir $(DEMO_SRCS)))
+vpath %.c $(DEMO_DIRS)
 
 all: $(LIB) $(CRT0) $(TESTS) $(PROBES) $(DEMOS) $(OUT)/batch/ps2batch.elf
 
@@ -131,9 +137,11 @@ $(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(H
 $(OUT)/probe/p10_vucopy.elf: PROBE_CFLAGS = -mvu0
 $(OUT)/probe/p11_vu0mix.elf: PROBE_CFLAGS = -mvu0
 
-$(OUT)/demos/%.elf: $(HERE)/demos/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
+# A demo's C file finds the headers of its directory.
+$(OUT)/demos/%.elf: %.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) \
+                    $(HERE)/ld/maxsdk.ld
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $(@:.elf=.o)
+	$(CC) $(CFLAGS) -I$(dir $<) -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 
 # ---- C library and C++ runtime (phase 8, D8c) -------------------------------
@@ -224,7 +232,8 @@ picolibc:
 
 BATCH_SRCS := tests/ps2/dma.c tests/ps2/gs.c tests/ps2/vif.c tests/ps2/vu.c \
               tests/ps2/frame.c probe/p2_dma.c probe/p3_gs.c probe/p4_vu.c probe/p5_fast.c \
-              demos/spin.c demos/scene.c demos/allunits.c tests/ps2/thread.c tests/ps2/dbit.c
+              demos/spin/spin.c demos/scene/scene.c demos/allunits/allunits.c tests/ps2/thread.c \
+              tests/ps2/dbit.c
 BATCH_OBJS := $(patsubst %.c,$(OUT)/batch/%.o,$(BATCH_SRCS))
 
 $(OUT)/batch/%.o: $(HERE)/%.c $(HDRS) $(HLSL_HDRS)

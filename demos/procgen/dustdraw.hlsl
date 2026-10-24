@@ -1,4 +1,4 @@
-// procgen dust (PLAN_PROCGEN P4), drawn: each mote (demos/dust.hlsl, box
+// procgen dust (PLAN_PROCGEN P4), drawn: each mote (demos/procgen/dust.hlsl, box
 // units 0..1) is moved into the box of size box.w laid around the eye, and
 // drawn as a small fogged, alpha-blended sprite. A mote near the eye or
 // reaching out of the guard band is not drawn (ADC on its second vertex).
