@@ -17,7 +17,8 @@
 struct pad_record {
   u32 frame;
   u8 state, req_state, ok, unk7;
-  u8 data[32]; /* data[1]: mode, data[2..3]: the buttons, 0 = held */
+  u8 data[32]; /* data[1]: mode, data[2..3]: the buttons, 0 = held,
+                  data[4..7] the sticks in analog mode */
   u32 length;
   u8 rest[20];
 };
@@ -81,6 +82,21 @@ u32 mx_pad_buttons(int port) {
     return 0;
   volatile struct pad_record *n = newest(port);
   return ~(u32)(n->data[2] | n->data[3] << 8) & 0xFFFF;
+}
+
+int mx_pad_sticks(int port, u8 st[4]) {
+  for (int i = 0; i < 4; i++)
+    st[i] = 128;
+  if (!mx_pad_connected(port))
+    return 0;
+  volatile struct pad_record *n = newest(port);
+  /* data[1]: the type in the high nibble (7: analog) and the halfwords of
+     data after it in the low one; the sticks are data[4..7] */
+  if ((n->data[1] >> 4) != 7 || (n->data[1] & 15) < 3 || n->length < 8)
+    return 0;
+  for (int i = 0; i < 4; i++)
+    st[i] = n->data[4 + i];
+  return 1;
 }
 
 u32 mx_pad_pressed(int port) {
