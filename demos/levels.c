@@ -1,4 +1,4 @@
-/* PLAN_PROCGEN P1: the cost of each quality level (demos/lvl0-3.vuk) on the
+/* PLAN_PROCGEN P1: the cost of each quality level (demos/lvl0-3.hlsl) on the
    PS2. Terrain patches of 33 x 33 vertices, each one triangle strip (the rows
    joined by two repeated vertices, which make degenerate triangles), drawn
    by the frame pipeline without vsync. Two scenes:
@@ -164,11 +164,10 @@ int main(void) {
   mx_frame_init(ring, sizeof ring, (void *)0x70002000, 0x2000);
   mx_frame_texture(0, mx_gs.tbp, 1, MX_GS_PSM_CT32, 64, 64, tex);
   mx_frame_wait_path3();
-  struct mx_shader sh[5] = {MX_VUK_SHADER(LVL0, lvl0_vu, lvl0_vu_end),
-                            MX_VUK_SHADER(LVL1, lvl1_vu, lvl1_vu_end),
-                            MX_VUK_SHADER(LVL2, lvl2_vu, lvl2_vu_end),
-                            MX_VUK_SHADER(LVL3, lvl3_vu, lvl3_vu_end),
-                            MX_VUK_SHADER(TF0, tf0_vu, tf0_vu_end)};
+  struct mx_shader sh[5] = {
+      MX_VU_SHADER(LVL0, lvl0_vu, lvl0_vu_end), MX_VU_SHADER(LVL1, lvl1_vu, lvl1_vu_end),
+      MX_VU_SHADER(LVL2, lvl2_vu, lvl2_vu_end), MX_VU_SHADER(LVL3, lvl3_vu, lvl3_vu_end),
+      MX_VU_SHADER(TF0, tf0_vu, tf0_vu_end)};
   static const struct {
     const char *name;
     int patches;

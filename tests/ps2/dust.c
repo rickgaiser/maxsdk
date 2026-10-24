@@ -1,4 +1,4 @@
-/* procgen's dust shader (demos/dustdraw.vuk): single batches of every size
+/* procgen's dust shader (demos/dustdraw.hlsl): single batches of every size
    through VIF1, read back from VU1 memory and compared with the same math
    on the EE: the two sprite corners, and the ADC bit of the second (a mote
    near the eye or reaching out of the guard band is not drawn). The motes
@@ -61,7 +61,7 @@ static void near(const char *what, u32 n, u32 i, s32 got, s32 want, s32 tol) {
 int main(void) {
   mx_gs_init(640, 448);
   mx_vif_reset(1);
-  struct mx_shader s = MX_VUK_SHADER(DUSTDRAW, dustdraw_vu, dustdraw_vu_end);
+  struct mx_shader s = MX_VU_SHADER(DUSTDRAW, dustdraw_vu, dustdraw_vu_end);
   for (u32 i = 0; i < N + 16; i++)
     pos[i][0] = rnd01(), pos[i][1] = rnd01(), pos[i][2] = rnd01(), pos[i][3] = rnd01() * 6;
   mx_dcache_writeback(pos, sizeof pos);
@@ -93,7 +93,7 @@ int main(void) {
       t_fail++;
       break;
     }
-    mx_vu1_read_dma(out, top + VUK_DUSTDRAW_OUT_AT, 1 + 3 * n, (void *)0x70000000, 16384);
+    mx_vu1_read_dma(out, top + VU_DUSTDRAW_OUT_AT, 1 + 3 * n, (void *)0x70000000, 16384);
     CHECK_EQ(out[0][0] & 0x7FFF, n);
     bad = 0;
     for (u32 i = 0; i < n; i++) {

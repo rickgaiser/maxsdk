@@ -1,7 +1,7 @@
 /* VU0 in macro and micro mode in one program (not at the same time): what
    happens to a macro instruction issued while a micro program runs, and to
    VF registers across a micro program? The micro program: the fBm kernel
-   (demos/fbm.vuk, 254 points, 6 octaves, ~200 k cycles), started by
+   (demos/fbm.hlsl, 254 points, 6 octaves, ~200 k cycles), started by
    VCALLMS (mx_vuq without DMA). Macro instructions: VADD writing vf25 (the
    kernel uses it), plain and with the interlocked QMFC2.I; the kernel's
    results compared with those of an undisturbed run. */
@@ -37,12 +37,12 @@ static u32 run(struct mx_vuq *q, const struct mx_kernel *k, int macro, float (*o
 }
 
 int main(void) {
-  struct mx_kernel k = MX_VUK_KERNEL(FBM, 0, fbm_vu, fbm_vu_end);
+  struct mx_kernel k = MX_VU_KERNEL(FBM, 0, fbm_vu, fbm_vu_end);
   mx_vu_reset(1);
   mx_vu_load(0, k.code, k.code_bytes, 0);
   for (int i = 0; i < N; i++)
     in[i][0] = 300.5f + (float)i * 0.37f, in[i][1] = 200.25f + (float)i * 0.11f, in[i][2] = in[i][3] = 0;
-  hdr[4 * VUK_FBM_OCT] = 6;
+  hdr[4 * VU_FBM_OCT] = 6;
   static struct mx_vuq q;
   mx_vuq_init(&q, 0, 0);
   u32 busy;

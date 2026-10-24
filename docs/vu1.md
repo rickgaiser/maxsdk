@@ -23,6 +23,9 @@ dominated, so `mx_vuq` can read VU1 back by DMA through the scratchpad (`mx_vuq_
 
 ## vuk shaders (PLAN_PROCGEN P1/P2, PS2, 2026-10-23)
 
+(The programs are HLSL now, [hlsl.md](hlsl.md); these numbers are of the vuk versions, measured on
+the PS2.)
+
 Compiled by vuk (`tools/vuk`, shader mode) and llc (VU target, feature tree), double-buffered
 through the frame pipeline (`mx_frame_shader_draw`). Terrain patches of 33 x 33 vertices as one
 strip each (2174 vertices, 124 degenerate join triangles), 64 patches (A, ~2 px triangles) or

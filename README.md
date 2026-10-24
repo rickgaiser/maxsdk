@@ -13,6 +13,8 @@ make check-deps      # fails if anything references ps2sdk
 make gen             # regenerate include/mx/hw/*.h, include/mx/bios.h, src/base/syscalls.S
 ```
 
+VU programs are HLSL (`demos/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
+
 Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with
 `ps2client -h 192.168.1.10 execee host:<elf>`. Every test ends with `@@PS2TEST_END@@ status=N`.
 `make batch` builds `batch/ps2batch.elf`: all PS2 tests, the phase 2–5 probes and the demos

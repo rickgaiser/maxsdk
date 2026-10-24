@@ -1,8 +1,8 @@
 /* PLAN_PROCGEN P4: a flight over generated terrain, every unit at work, at
    640 x 448 and 60 fields a second.
-     - VU0 makes the terrain heights (demos/fbm.vuk), chunk after chunk, as
+     - VU0 makes the terrain heights (demos/fbm.hlsl), chunk after chunk, as
        the camera needs them (the chunks in the view cone), and moves the
-       dust (demos/dust.vuk), through a VIF0 queue;
+       dust (demos/dust.hlsl), through a VIF0 queue;
      - the EE builds each chunk's vertex streams (normals, colour by height
        and slope, texture coordinates, a half resolution level and the edges
        that fill its cracks, trees) after a frame is queued, culls the chunks
@@ -20,7 +20,11 @@
    START on the pad (port 0) during "looks" switches to the interactive mode
    until TRIANGLE: SELECT cycles the quality (AUTO by distance, L0-L3 for all
    chunks, HALF: half resolution), START switches vsync (looks / max count),
-   L1 and R1 set the view distance, SQUARE gives it back to the budget. */
+   L1 and R1 set the view distance, SQUARE gives it back to the budget.
+   -DPROCGEN_SAME: the same pictures whatever the speed of the units (to
+   compare builds): no budget, the heights of a chunk made in one frame, the
+   dust moved by one vblank a frame and after the frame is drawn, no busy
+   line. */
 
 #include <mx/mx.h>
 #include <mx/pad.h>
@@ -242,7 +246,7 @@ static int gen_build(void) {
 
 /* ---- dust on VU0 ----------------------------------------------------------- */
 
-/* Motes in box units (demos/dust.vuk), moved by VU0 once a frame through the
+/* Motes in box units (demos/dust.hlsl), moved by VU0 once a frame through the
    VIF0 queue of the heights, between their batches (VU0's data memory holds
    one batch). fbm and dust do not fit VU0's 4 KiB of micro memory together:
    both are at 0, and the queue sends the code of a batch's kernel with it
@@ -262,7 +266,7 @@ static void dust_init(void) {
     dust[i][2] = itof((s32)(h >> 20 & 1023)) / 1024, dust[i][3] = itof((s32)(h >> 7 & 255)) / 40;
   }
   mx_dcache_writeback(dust, sizeof dust);
-  dust_k = MX_VUK_KERNEL(DUST, 0, dust_vu, dust_vu_end);
+  dust_k = MX_VU_KERNEL(DUST, 0, dust_vu, dust_vu_end);
   dust_vsync = mx_gs.vsync;
 }
 
@@ -273,8 +277,11 @@ static void dust_update(void) {
     return;
   dust_pending = 0;
   u32 v = mx_gs.vsync, dv = v - dust_vsync;
+#ifdef PROCGEN_SAME
+  v = dust_vsync + 1, dv = 1; /* one vblank per frame */
+#endif
   dust_vsync = v;
-  float dt = itof((s32)(dv > 4 ? 4 : dv)) / 60, *c = (float *)&dust_hdr[4 * VUK_DUST_C];
+  float dt = itof((s32)(dv > 4 ? 4 : dv)) / 60, *c = (float *)&dust_hdr[4 * VU_DUST_C];
   c[0] = dt * 2.5f / DUST_BOX, c[1] = itof((s32)v) / 60, c[2] = 1.4f, c[3] = dt * 0.4f / DUST_BOX;
   u32 per = mx_kernel_max_items(&dust_k);
   for (u32 at = 0; at < NDUST; at += per) {
@@ -1046,9 +1053,20 @@ static void frame(float t) {
     bind(&sh_dust);
     draw_dust();
   }
+#ifdef PROCGEN_SAME
+  /* the busy times and missed vblanks of the third line depend on the speed */
+  for (int l = 0; l < 2; l++)
+#else
   for (int l = 0; l < 3; l++)
+#endif
     text(8, 6 + 9 * (u32)l, hud[l]);
   mx_frame_end();
+#ifdef PROCGEN_SAME
+  /* the dust and the streams below are written in place: not while the
+     frame still draws them */
+  while (mx_frame_done() < mx_frame_number())
+    ;
+#endif
   /* after the frame is queued, while VU1 and the GS draw it: the dust on VU0
      between two batches of heights (the one in flight first), then the
      streams of a chunk */
@@ -1064,6 +1082,13 @@ static void frame(float t) {
   } else {
     gen_poll();
   }
+#ifdef PROCGEN_SAME
+  /* the heights of a chunk in the frame that starts them */
+  while (gen.c >= 0) {
+    gen_kick();
+    gen_poll();
+  }
+#endif
   gen_build();
   frame_no++;
 }
@@ -1128,6 +1153,9 @@ static void report(const char *name, u32 frames, u32 cycles, u32 vs, u32 *busy, 
    frames that were all ready 20 % of a field early, 0.25 shorter as soon as
    one is ready less than 8 % early (or late), then 3 frames to take effect. */
 static void budget(u32 missed_before) {
+#ifdef PROCGEN_SAME
+  return;
+#endif
   static u32 calm, hold;
   if (hold) {
     hold--;
@@ -1240,20 +1268,20 @@ int main(void) {
   STEP("start");
   mx_gs_init(SW, SH);
   mx_vu_reset(3);
-  fbm_k = MX_VUK_KERNEL(FBM, 0, fbm_vu, fbm_vu_end);
+  fbm_k = MX_VU_KERNEL(FBM, 0, fbm_vu, fbm_vu_end);
   mx_vu_load(0, fbm_k.code, fbm_k.code_bytes, 0);
   mx_vuq_init(&q0, 0, 1);
   dust_init();
   mx_vuq_readback_spr(&q0, (void *)0x70000000, 0x2000);
-  fbm_hdr[4 * VUK_FBM_OCT] = OCT;
+  fbm_hdr[4 * VU_FBM_OCT] = OCT;
   gen.per = mx_kernel_max_items(&fbm_k);
-  sh_tf0 = MX_VUK_SHADER(TF0, tf0_vu, tf0_vu_end);
-  sh_tf1 = MX_VUK_SHADER(TF1, tf1_vu, tf1_vu_end);
-  sh_tf2 = MX_VUK_SHADER(TF2, tf2_vu, tf2_vu_end);
-  sh_l3 = MX_VUK_SHADER(LVL3, lvl3_vu, lvl3_vu_end);
-  sh_water = MX_VUK_SHADER(WATER, water_vu, water_vu_end);
-  sh_tree = MX_VUK_SHADER(TREE, tree_vu, tree_vu_end);
-  sh_dust = MX_VUK_SHADER(DUSTDRAW, dustdraw_vu, dustdraw_vu_end);
+  sh_tf0 = MX_VU_SHADER(TF0, tf0_vu, tf0_vu_end);
+  sh_tf1 = MX_VU_SHADER(TF1, tf1_vu, tf1_vu_end);
+  sh_tf2 = MX_VU_SHADER(TF2, tf2_vu, tf2_vu_end);
+  sh_l3 = MX_VU_SHADER(LVL3, lvl3_vu, lvl3_vu_end);
+  sh_water = MX_VU_SHADER(WATER, water_vu, water_vu_end);
+  sh_tree = MX_VU_SHADER(TREE, tree_vu, tree_vu_end);
+  sh_dust = MX_VU_SHADER(DUSTDRAW, dustdraw_vu, dustdraw_vu_end);
   STEP("vu0 queue");
   mx_frame_init(ring, sizeof ring, (void *)0x70002000, 0x2000);
   STEP("frame");

@@ -1,5 +1,5 @@
-/* vuk shaders (PLAN_PROCGEN P2): single batches of the quality-level shaders
-   (demos/lvl0-3.vuk) through VIF1, for every vertex count of a batch (each
+/* HLSL shaders (PLAN_PROCGEN P2): single batches of the quality-level shaders
+   (demos/lvl0-3.hlsl) through VIF1, for every vertex count of a batch (each
    takes its own way through the compiled loop: the unrolled kernel, the
    stages before and after it, the loop for the rest), read back from VU1
    memory and compared with the same math on the EE. */
@@ -88,7 +88,7 @@ static void near_float(const char *what, u32 lvl, u32 n, u32 i, int k, u32 got, 
               (s32)(g.f * 1000.0f), (s32)(want * 1000.0f));
 }
 
-/* The EE version of each level (the same expressions as the .vuk files). */
+/* The EE version of each level (the same expressions as the .hlsl files). */
 static void check(u32 lvl, const struct mx_shader *s, u32 out_at, u32 n, u32 top) {
   mx_vu1_read_dma(out, top + out_at, 1 + s->out_qw * n, (void *)0x70000000, 16384);
   CHECK_EQ(out[0][0] & 0x7FFF, n);
@@ -196,11 +196,11 @@ static void set_uniforms(u32 lvl) {
 int main(void) {
   mx_gs_init(640, 224);
   mx_vif_reset(1);
-  struct level lv[4] = {{"lvl0", MX_VUK_SHADER(LVL0, lvl0_vu, lvl0_vu_end), VUK_LVL0_UNI_QW},
-                        {"lvl1", MX_VUK_SHADER(LVL1, lvl1_vu, lvl1_vu_end), VUK_LVL1_UNI_QW},
-                        {"lvl2", MX_VUK_SHADER(LVL2, lvl2_vu, lvl2_vu_end), VUK_LVL2_UNI_QW},
-                        {"lvl3", MX_VUK_SHADER(LVL3, lvl3_vu, lvl3_vu_end), VUK_LVL3_UNI_QW}};
-  const u32 out_at[4] = {VUK_LVL0_OUT_AT, VUK_LVL1_OUT_AT, VUK_LVL2_OUT_AT, VUK_LVL3_OUT_AT};
+  struct level lv[4] = {{"lvl0", MX_VU_SHADER(LVL0, lvl0_vu, lvl0_vu_end), VU_LVL0_UNI_QW},
+                        {"lvl1", MX_VU_SHADER(LVL1, lvl1_vu, lvl1_vu_end), VU_LVL1_UNI_QW},
+                        {"lvl2", MX_VU_SHADER(LVL2, lvl2_vu, lvl2_vu_end), VU_LVL2_UNI_QW},
+                        {"lvl3", MX_VU_SHADER(LVL3, lvl3_vu, lvl3_vu_end), VU_LVL3_UNI_QW}};
+  const u32 out_at[4] = {VU_LVL0_OUT_AT, VU_LVL1_OUT_AT, VU_LVL2_OUT_AT, VU_LVL3_OUT_AT};
   CHECK_EQ(lv[0].s.align, 4);
   for (u32 i = 0; i < N + 16; i++) {
     pos[i][0] = rnd(), pos[i][1] = rnd(), pos[i][2] = rnd();

@@ -82,7 +82,7 @@ void mx_vu_mark_resident(int vu, const void *code, u32 bytes, u32 addr);
 /* A micro-mode kernel and its data memory layout: a header of hdr_qw
    quadwords (parameters, with the item count as an i32 in the x field of
    quadword count_qw) at address 0, then the items from data_qw. Items are
-   transformed in place (the vuk convention).
+   transformed in place (an HLSL compute program, llvm VUEntryABI.md).
 
    dbuf = 1: double buffered. The data memory from data_qw is split into two
    buffers; batches go to them in turn, each buffer starting with a count
@@ -107,14 +107,19 @@ struct mx_kernel {
   u32 out_qw;   /* output quadwords per item after the items (0: in place) */
 };
 
-/* A kernel from a vuk -H header: the layout (VUK_<NAME>_N, _X, _SIZE) and
-   how to launch it (_ENTRY, _ITEM_QW, _DBUF). Items are sent as UNPACK
-   V4-32, the only format the queues use (_FORMAT 0x0C). */
-#define MX_VUK_KERNEL(NAME, vu_, code_, code_end_)                                         \
-  ((struct mx_kernel){.vu = (vu_), .code = (code_), .code_bytes = (u32)((code_end_) - (code_)), \
-                      .entry = VUK_##NAME##_ENTRY, .hdr_qw = VUK_##NAME##_SIZE,             \
-                      .count_qw = VUK_##NAME##_N, .data_qw = VUK_##NAME##_X,                \
-                      .item_qw = VUK_##NAME##_ITEM_QW, .dbuf = VUK_##NAME##_DBUF})
+/* A kernel from the layout header of an HLSL compute program NAME (llc's
+   section .vu.header: VU_<NAME>_N, _SIZE, _ENTRY, _ITEM_QW, _DBUF). Items
+   are sent as UNPACK V4-32, the only format the queues use (_FORMAT 0x0C). */
+#define MX_VU_KERNEL(NAME, vu_, code_, code_end_)                                                  \
+  ((struct mx_kernel){.vu = (vu_),                                                                 \
+                      .code = (code_),                                                             \
+                      .code_bytes = (u32)((code_end_) - (code_)),                                  \
+                      .entry = VU_##NAME##_ENTRY,                                                  \
+                      .hdr_qw = VU_##NAME##_SIZE,                                                  \
+                      .count_qw = VU_##NAME##_N,                                                   \
+                      .data_qw = VU_##NAME##_SIZE,                                                 \
+                      .item_qw = VU_##NAME##_ITEM_QW,                                              \
+                      .dbuf = VU_##NAME##_DBUF})
 
 /* Items per batch that fit the data memory of the kernel's VU (VU0 4 KiB,
    VU1 16 KiB), per buffer for double-buffered kernels. */

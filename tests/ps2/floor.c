@@ -1,4 +1,4 @@
-/* vuk's floor (tools/vuk) on VU0 against the exact floor, for values with
+/* The VU's floor (LLVM's VU target, floor in HLSL) on VU0 against the exact floor, for values with
    every kind of fraction, of both signs, up to 2^21. The PS2's VU (unlike
    PCSX2) cuts the smaller operand of an add to one bit below the sum's last,
    which the magic-constant floor must correct. */
@@ -19,7 +19,7 @@ static float floor_(float v) {
 }
 
 int main(void) {
-  struct mx_kernel k = MX_VUK_KERNEL(FL, 0, floor_vu, floor_vu_end);
+  struct mx_kernel k = MX_VU_KERNEL(FL, 0, floor_vu, floor_vu_end);
   mx_vu_reset(1);
   mx_vu_load(0, k.code, k.code_bytes, 0);
   u32 seed = 3;

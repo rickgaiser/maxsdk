@@ -1,5 +1,9 @@
 # vuk
 
+**Retired** (GOAL_VU_HLSL): maxsdk's VU programs are HLSL now ([docs/hlsl.md](../../docs/hlsl.md)).
+vuk stays as a small producer of VU entry functions for LLVM's `VUEntryLowering` (`--entry`): with
+it, a kernel written for the tests needs no clang. The Makefile no longer builds `.vuk` files.
+
 A tiny kernel language for VU micro programs. `vuk.py` turns a `.vuk` file into LLVM IR for
 `llc -mtriple=vu`, plus a C header with the data memory layout for the EE side.
 

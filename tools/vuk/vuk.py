@@ -260,6 +260,8 @@ class Gen:
         self.shader = False
         self.meta = []
         self.attrs = []
+        # --entry: the globals of the entry functions (VUEntryLowering)
+        self.globals = []
 
     def tmp(self):
         self.n += 1
@@ -540,8 +542,20 @@ class Gen:
         self.emit(f"{t} = add i16 {self.as_i16(i)}, {base}")
         return t
 
+    def item_ptr(self, name, idx, env):
+        """--entry: the pointer to item idx of the items array."""
+        i = self.as_i16(self.value(idx, env))
+        t = self.tmp()
+        self.emit(f"{t} = getelementptr [0 x <4 x float>], ptr addrspace(4) @{name}, "
+                  f"i16 0, i16 {i}")
+        return t
+
     def load(self, name, idx, env):
         arr = env.get(name)
+        if arr is not None and arr[0] == "items":
+            p, t = self.item_ptr(name, idx, env), self.tmp()
+            self.emit(f"{t} = load <4 x float>, ptr addrspace(4) {p}")
+            return ("f32x4", t)
         if arr is not None and arr[0] == "table":
             # const f32[] parameter: loaded at kernel entry, index must be constant
             k = self.const_eval(idx, env)
@@ -569,9 +583,12 @@ class Gen:
                 target, e = s[1], s[2]
                 v = self.value(e, env)
                 if target[0] == "name":
-                    if target[1] not in env or env[target[1]][0] in ("array", "table"):
+                    if target[1] not in env or env[target[1]][0] in ("array", "table", "items"):
                         raise VukError(f"cannot assign to {target[1]}")
                     env[target[1]] = v
+                elif target[0] == "index" and env.get(target[1], ("",))[0] == "items":
+                    p = self.item_ptr(target[1], target[2], env)
+                    self.emit(f"store <4 x float> {self.as_vec(v)}, ptr addrspace(4) {p}")
                 elif target[0] == "index":
                     a = self.address(target[1], target[2], env)
                     self.emit(f"call void @llvm.vu.sq(<4 x float> {self.as_vec(v)}, i16 {a})")
@@ -757,6 +774,171 @@ def compile_kernel(gen, kernel, header):
     return gen.lines
 
 
+def entry_attrs(gen, name, unit, kind, extra=""):
+    """--entry: the attributes of an entry function for VUEntryLowering."""
+    a = f'"vu-entry"="{kind}" "vu-header-prefix"="VUK_"'
+    if unit:
+        a += f' "target-cpu"="{unit}"'
+    gen.attrs.append(f"attributes #{len(gen.attrs)} = {{ {a}{extra} }}")
+    return f"define void @{name}() #{len(gen.attrs) - 1} {{"
+
+
+def entry_meta(gen, text):
+    m = f"!{len(gen.meta)}"
+    gen.meta.append(f"{m} = !{{{text}}}")
+    return m
+
+
+def entry_uniform(gen, name, qw, count):
+    """A uniform of count quadwords at quadword qw (from 1) of the layout."""
+    m = entry_meta(gen, f"i32 {(qw - 1) * 16}")
+    gen.globals.append(f"@{name} = external addrspace(1) global [{count} x <4 x float>], "
+                       f"!vu.uniform {m}")
+
+    def load(k):
+        p, t = gen.tmp(), gen.tmp()
+        gen.emit(f"{p} = getelementptr [{count} x <4 x float>], ptr addrspace(1) @{name}, "
+                 f"i16 0, i16 {k}")
+        gen.emit(f"{t} = load <4 x float>, ptr addrspace(1) {p}")
+        return t
+    return load
+
+
+def compile_kernel_entry(gen, kernel):
+    """--entry: a kernel as a "compute" entry function that runs once (its
+    loops are its own). The first parameter, an i16, is the item count; the
+    others are uniforms at the same quadwords as without --entry; the unsized
+    array is the items."""
+    name, params, body, unit = kernel
+    env, addr = {}, 0
+    gen.lines, gen.label = [], "entry"
+    gen.lines.append(entry_attrs(gen, name, unit, "compute"))
+    gen.block("entry")
+    for i, (pname, (ty, size)) in enumerate(params):
+        if i == 0:
+            if ty != "i16" or size is not None:
+                raise VukError(f"{pname}: with --entry, the first parameter is the i16 count")
+            t = gen.tmp()
+            gen.emit(f"{t} = call i16 @llvm.vu.item.count()")
+            gen.uses.add("count")
+            env[pname] = ("i16", t)
+            addr = 1
+        elif size is None and ty == "i16":
+            m = entry_meta(gen, f"i32 {(addr - 1) * 16}")
+            gen.globals.append(f"@{pname} = external addrspace(1) global i16, !vu.uniform {m}")
+            t = gen.tmp()
+            gen.emit(f"{t} = load i16, ptr addrspace(1) @{pname}")
+            env[pname] = ("i16", t)
+            addr += 1
+        elif size is None and ty == "f32":
+            v = entry_uniform(gen, pname, addr, 1)(0)
+            sp = gen.tmp()
+            gen.emit(f"{sp} = shufflevector <4 x float> {v}, <4 x float> poison, <4 x i32> zeroinitializer")
+            env[pname] = ("f32x4", sp)
+            addr += 1
+        elif ty == "f32" and size != "unsized":
+            count = gen.const_eval(size)
+            if not isinstance(count, int) or count <= 0:
+                raise VukError(f"{pname}: size must be a positive constant")
+            nq = (count + 3) // 4
+            load = entry_uniform(gen, pname, addr, nq)
+            vals = []
+            for q in range(nq):
+                t = load(q)
+                for f in range(4):
+                    if len(vals) == count:
+                        break
+                    sp = gen.tmp()
+                    gen.emit(f"{sp} = shufflevector <4 x float> {t}, <4 x float> poison, "
+                             f"<4 x i32> <i32 {f}, i32 {f}, i32 {f}, i32 {f}>")
+                    vals.append(sp)
+            env[pname] = ("table", vals)
+            addr += nq
+        elif ty == "f32x4" and size == "unsized":
+            if i != len(params) - 1:
+                raise VukError(f"{pname}: an unsized array must be the last parameter")
+            gen.globals.append(f"@{pname} = external addrspace(4) global [0 x <4 x float>]")
+            env[pname] = ("items", pname)
+        else:
+            raise VukError(f"{pname}: not supported with --entry")
+    gen.stmts(body, env)
+    gen.emit("ret void")
+    gen.lines.append("}")
+    return gen.lines
+
+
+def compile_shader_entry(gen, shader, buf_qw):
+    """--entry: a shader as a "vertex" entry function for one vertex."""
+    _, name, uniforms, inputs, body, states, unit = shader
+    if unit == "vu0":
+        raise VukError(f"shader {name}: shaders run on VU1 (XGKICK)")
+    env = {}
+    gen.lines, gen.label = [], "entry"
+    gen.shader = True
+    gen.lines.append(entry_attrs(gen, name, None, "vertex", f' "vu-buffer-qw"="{buf_qw}"'))
+    gen.block("entry")
+    addr = 1
+    for uname, (ty, size), line in uniforms:
+        if ty == "f32" and size is None:
+            env[uname] = ("f32x4", gen.lane(entry_uniform(gen, uname, addr, 1)(0), 0))
+            addr += 1
+        elif ty == "f32x4" and size is None:
+            env[uname] = ("f32x4", entry_uniform(gen, uname, addr, 1)(0))
+            addr += 1
+        elif ty == "f32x4" and size not in (None, "unsized"):
+            count = gen.const_eval(size)
+            if not isinstance(count, int) or count <= 0:
+                raise VukError(f"line {line}: {uname}: size must be a positive constant")
+            load = entry_uniform(gen, uname, addr, count)
+            env[uname] = ("table", [load(k) for k in range(count)])
+            addr += count
+        else:
+            raise VukError(f"line {line}: {uname}: a uniform is f32, f32x4 or f32x4[K]")
+    for k, (iname, fmt, line) in enumerate(inputs):
+        m = entry_meta(gen, f'i32 {k}, !"{fmt}"')
+        gen.globals.append(f"@{iname} = external addrspace(2) global <4 x float>, !vu.input {m}")
+        t = gen.tmp()
+        gen.emit(f"{t} = load <4 x float>, ptr addrspace(2) @{iname}")
+        env[iname] = ("f32x4", t)
+    # The states keep their value from vertex to vertex (!vu.carry).
+    for sname, e, line in states:
+        v = gen.const_eval(e, env)
+        if v is None:
+            raise VukError(f"line {line}: with --entry, a state starts with a constant")
+        m = entry_meta(gen, "")
+        gen.globals.append(f"@{sname} = internal addrspace(5) global <4 x float> "
+                           f"splat (float {struct_hex(float(v))}), !vu.carry {m}")
+        t = gen.tmp()
+        gen.emit(f"{t} = load <4 x float>, ptr addrspace(5) @{sname}")
+        env[sname] = ("f32x4", t)
+    outs, values = 0, []
+    for st in body:
+        if st[0] == "out":
+            _, reg, e, line = st
+            if reg not in GIF_REGS:
+                raise VukError(f"line {line}: unknown GIF register {reg}")
+            try:
+                v = gen.as_vec(gen.value(e, env))
+            except VukError as err:
+                raise VukError(f"line {line}: {err}") from None
+            m = entry_meta(gen, f'i32 {outs}, !"{reg}"')
+            gen.globals.append(f"@{name}.out{outs} = external addrspace(3) global <4 x float>, "
+                               f"!vu.output {m}")
+            values.append((outs, v))
+            outs += 1
+        else:
+            gen.stmt(st, env)
+    # The outputs are stored after the body, as without --entry.
+    for j, v in values:
+        gen.emit(f"store <4 x float> {v}, ptr addrspace(3) @{name}.out{j}")
+    for sname, e, line in states:
+        gen.emit(f"store <4 x float> {gen.as_vec(env[sname])}, ptr addrspace(5) @{sname}")
+    gen.emit("ret void")
+    gen.lines.append("}")
+    gen.shader = False
+    return gen.lines
+
+
 DECLS = {
     "lq": "declare <4 x float> @llvm.vu.lq(i16)",
     "sq": "declare void @llvm.vu.sq(<4 x float>, i16)",
@@ -767,6 +949,7 @@ DECLS = {
     "maxnum": "declare <4 x float> @llvm.maxnum.v4f32(<4 x float>, <4 x float>)",
     "fabs": "declare <4 x float> @llvm.fabs.v4f32(<4 x float>)",
     "sqrt": "declare float @llvm.sqrt.f32(float)",
+    "count": "declare i16 @llvm.vu.item.count()",
 }
 
 # ---------------------------------------------------------------- shaders
@@ -959,6 +1142,10 @@ def main():
     ap.add_argument("-o", "--output", default="-")
     ap.add_argument("-H", "--header", help="write the data memory layout as a C header")
     ap.add_argument("-D", action="append", default=[], metavar="NAME=VALUE")
+    ap.add_argument("--entry", action="store_true",
+                    help="emit entry functions for VUEntryLowering: llc lays out the data "
+                         "memory and puts the layout in section .vu.header; -H then only "
+                         "has the constants")
     ap.add_argument("--buffer", type=int, default=512,
                     help="quadwords of VU1 memory per shader batch buffer (default 512: "
                          "double buffered, VIF1 BASE 0, OFFSET 512)")
@@ -981,7 +1168,11 @@ def main():
             gen.consts[cname] = v
         header, funcs = [], []
         for k in kernels:
-            if k[0] == "shader":
+            if args.entry and k[0] == "shader":
+                funcs.append("\n".join(compile_shader_entry(gen, k, args.buffer)))
+            elif args.entry:
+                funcs.append("\n".join(compile_kernel_entry(gen, k[1:])))
+            elif k[0] == "shader":
                 funcs.append("\n".join(compile_shader(gen, k, header, args.buffer)))
             else:
                 funcs.append("\n".join(compile_kernel(gen, k[1:], header)))
@@ -989,7 +1180,7 @@ def main():
         sys.exit(f"{args.input}: error: {err}")
 
     out = [f"; generated by vuk from {args.input}"]
-    out += [DECLS[u] for u in sorted(gen.uses)] + [""] + funcs + [""] + gen.attrs + gen.meta + [""]
+    out += gen.globals + [DECLS[u] for u in sorted(gen.uses)] + [""] + funcs + [""] + gen.attrs + gen.meta + [""]
     text = "\n".join(out)
     if args.output == "-":
         sys.stdout.write(text)
@@ -998,6 +1189,10 @@ def main():
     if args.header:
         guard = re.sub(r"\W", "_", args.header.split("/")[-1]).upper()
         consts = [f"#define VUK_{k} {v}" for k, v in gen.consts.items()]
+        if args.entry:
+            # the layout: llc's section .vu.header (llvm-objcopy --dump-section)
+            base = args.header.split("/")[-1].rsplit(".", 1)[0]
+            header.append(f'#include "{base}.layout.h"')
         open(args.header, "w").write(
             f"/* generated by vuk from {args.input} */\n#ifndef {guard}\n#define {guard}\n\n"
             + "\n".join(consts) + "\n\n" + "\n".join(header) + f"\n#endif\n")

@@ -99,9 +99,9 @@ int mx_frame_vu1_compute(const struct mx_kernel *k, const void *hdr, const void 
 /* End the frame: FLUSH (VU1 and PATH1 done), FINISH, push the stream. */
 void mx_frame_end(void);
 
-/* ---- shaders (vuk shader mode, PLAN_PROCGEN) --------------------------------- */
+/* ---- shaders (HLSL vertex programs, PLAN_PROCGEN) ---------------------------- */
 
-/* A VU1 render program compiled by vuk from a `shader` (tools/vuk/vuk.md):
+/* A VU1 render program compiled from an HLSL vertex shader (include/vu.hlsli):
    per vertex it reads one quadword per input and writes nreg GIF registers.
    Each input is its own stream in memory, in its UNPACK format, so position,
    normal and colour can each take as few bytes as they need. */
@@ -128,15 +128,22 @@ struct mx_shader {
   struct mx_shader_in in[MX_SHADER_MAX_IN];
 };
 
-/* From the vuk -H header of shader NAME and its code symbols. */
-#define MX_VUK_SHADER(NAME, code_, code_end_)                                              \
-  ((struct mx_shader){.code = (code_), .code_bytes = (u32)((code_end_) - (code_)),         \
-                      .entry = VUK_##NAME##_ENTRY, .buf_qw = VUK_##NAME##_BUF_QW,          \
-                      .uni_qw = VUK_##NAME##_UNI_QW, .item_qw = VUK_##NAME##_ITEM_QW,      \
-                      .out_qw = VUK_##NAME##_OUT_QW, .max_n = VUK_##NAME##_MAX_N,          \
-                      .align = VUK_##NAME##_ALIGN, .nreg = VUK_##NAME##_NREG,              \
-                      .regs = VUK_##NAME##_REGS, .nin = VUK_##NAME##_NIN,                  \
-                      .in = VUK_##NAME##_INPUTS})
+/* From the layout header of vertex program NAME (llc's section .vu.header)
+   and its code symbols. */
+#define MX_VU_SHADER(NAME, code_, code_end_)                                                       \
+  ((struct mx_shader){.code = (code_),                                                             \
+                      .code_bytes = (u32)((code_end_) - (code_)),                                  \
+                      .entry = VU_##NAME##_ENTRY,                                                  \
+                      .buf_qw = VU_##NAME##_BUF_QW,                                                \
+                      .uni_qw = VU_##NAME##_UNI_QW,                                                \
+                      .item_qw = VU_##NAME##_ITEM_QW,                                              \
+                      .out_qw = VU_##NAME##_OUT_QW,                                                \
+                      .max_n = VU_##NAME##_MAX_N,                                                  \
+                      .align = VU_##NAME##_ALIGN,                                                  \
+                      .nreg = VU_##NAME##_NREG,                                                    \
+                      .regs = VU_##NAME##_REGS,                                                    \
+                      .nin = VU_##NAME##_NIN,                                                      \
+                      .in = VU_##NAME##_INPUTS})
 
 /* Quadwords of VIF packets that mx_shader_e_batch writes (the input data is
    referenced, not copied). */

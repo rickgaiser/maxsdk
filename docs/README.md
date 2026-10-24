@@ -15,6 +15,7 @@ decision in maxsdk and in the compiler.
 | [vif.md](vif.md) | VIF codes: costs and behaviour |
 | [gif-gs.md](gif-gs.md) | GIF paths, GS SIGNAL/FINISH/LABEL, vsync |
 | [vu0.md](vu0.md), [vu1.md](vu1.md) | VU macro/micro mode, transfers, control |
+| [hlsl.md](hlsl.md) | Writing VU programs in HLSL (not measurements: how the toolchain is used) |
 | [bios.md](bios.md) | EE kernel (BIOS) behaviour the SDK relies on |
 | [sync.md](sync.md) | Patterns that keep all units busy, and their idle gaps |
 | [pcsx2.md](pcsx2.md) | Where PCSX2 differs from the PS2 (correctness only) |
