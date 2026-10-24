@@ -36,8 +36,9 @@ Out mskin(In v) {
     float4 c1 = joint[j.x + 1] * w.x + joint[j.y + 1] * w.y + joint[j.z + 1] * w.z + joint[j.w + 1] * w.w;
     float4 c2 = joint[j.x + 2] * w.x + joint[j.y + 2] * w.y + joint[j.z + 2] * w.z + joint[j.w + 2] * w.w;
     float4 c3 = joint[j.x + 3] * w.x + joint[j.y + 3] * w.y + joint[j.z + 3] * w.z + joint[j.w + 3] * w.w;
+    float4 nrm = float4(v.nrm);
     float4 m = c0 * v.pos.x + c1 * v.pos.y + c2 * v.pos.z + c3;
-    float3 n = (c0 * v.nrm.x + c1 * v.nrm.y + c2 * v.nrm.z).xyz;
+    float3 n = (c0 * nrm.x + c1 * nrm.y + c2 * nrm.z).xyz;
     float4 p = mul(mvp, float4(m.xyz, 1));
     float q = rcp(p.w);
     float d = max(dot(n, light.xyz) * rsqrt(dot(n, n) + 1e-6), 0.0f);
