@@ -151,12 +151,41 @@ $(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(H
 $(OUT)/probe/p10_vucopy.elf: PROBE_CFLAGS = -mvu0
 $(OUT)/probe/p11_vu0mix.elf: PROBE_CFLAGS = -mvu0
 
-# A demo's C file finds the headers of its directory.
-$(OUT)/demos/%.elf: %.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) \
-                    $(HERE)/ld/maxsdk.ld
+# A demo's C file finds the headers of its directory and demos/common, and
+# links the data of DEMO_OBJS_<program>.
+.SECONDEXPANSION:
+$(OUT)/demos/%.elf: %.c $$(DEMO_OBJS_$$*) $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) \
+                    $(HDRS) $(HERE)/ld/maxsdk.ld
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(dir $<) -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
+	$(CC) $(CFLAGS) -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_$*) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
+
+# The model demo's model, built in (tools/model/gltf2mxm.py: Python 3 and
+# Pillow), made for the indexed programs it draws with.
+MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mskin)
+DEMO_OBJS_model := $(OUT)/demos/model/fox_mxm.o
+
+$(OUT)/demos/model/fox.mxm: $(HERE)/demos/model/assets/Fox.glb $(HERE)/tools/model/gltf2mxm.py \
+                            $(MODEL_IX)
+	@mkdir -p $(dir $@)
+	python3 -I -B $(HERE)/tools/model/gltf2mxm.py $< $@ --limits $(MODEL_IX)
+
+# model_rec<n>.elf: the model demo recording MODEL_RECORD frames of n x n
+# copies as host:rec_*.tga (tools/model/frames2video.py makes a video of them).
+MODEL_RECORD ?= 90
+$(OUT)/demos/model_rec%.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LIB) $(CRT0) \
+                             $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DMODEL_RECORD=$(MODEL_RECORD) -DMODEL_RECORD_COPIES=$* -I$(dir $<) \
+	  -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
+
+model-record: $(OUT)/demos/model_rec1.elf $(OUT)/demos/model_rec8.elf
+
+$(OUT)/demos/model/%_mxm.o: $(OUT)/demos/model/%.mxm
+	printf '%s\n' '.section .rodata.model, "a"' '.balign 64' '.globl model_$*' 'model_$*:' \
+	  '.incbin "$<"' '.globl model_$*_end' 'model_$*_end:' > $(@:.o=.S)
+	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
 
 # ---- C library and C++ runtime (phase 8, D8c) -------------------------------
 # picolibc (built by `make picolibc` into PICOLIBC) with maxsdk's glue
@@ -291,5 +320,5 @@ gen:
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all batch libc picolibc test-host check-deps gen clean
+.PHONY: all batch libc picolibc test-host check-deps gen clean model-record
 .SECONDARY:

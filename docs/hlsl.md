@@ -50,6 +50,27 @@ Out lvl2(In v) { ... }
 
 The layout is the one `mx_frame_shader_draw` uses: `MX_VU_SHADER(NAME, name_vu, name_vu_end)`.
 
+## Indexed vertex programs (VU1)
+
+The same vertex shader, built with `opt -vu-indexed=N` (the Makefile's `HLSL_IX` list makes
+`<name>_ix` from `<name>.hlsl`, `IX_N` vertices, the header's macros `VU_IX_<NAME>_...`), draws
+batches of N vertices and up to `MAX_I` indices: the code runs once for each vertex and writes
+its outputs into a table; then the program copies them into the GIF packet by the index list (8
+VU1 cycles an index for 3 outputs). A vertex that the triangles share is transformed once.
+
+| | Indexed |
+|---|---|
+| Layout (llvm `VUEntryABI.md`) | each buffer: GIF tag, counts, inputs, indices; shared: one GIF packet (a batch waits with an XGKICK of an empty tag until the GIF has read the one before), two uniform blocks (one per draw, by turns: `counts.z`), the table |
+| EE side (`<mx/frame.h>`) | `MX_VU_ISHADER(IX_NAME, ...)`, `mx_frame_shader_idraw(s, prim, uni, streams, batches, n)`, a `struct mx_ibatch` per batch: the first vertex (a multiple of `align`), the vertex and index counts, the indices |
+| Indices | bytes, UNPACK V4-8U, each the vertex times `OUT_QW`; sent in whole quadwords of 16; (N − 1) × `OUT_QW` ≤ 255 |
+| Strips | restart by repeating vertices (degenerate triangles); the gather does not look at the primitive |
+| `SV_VertexID` | the vertex's number in the batch |
+| Not possible | a `static` carried from vertex to vertex (the vertices are not drawn in the order they are transformed) |
+| Switching programs | `mx_frame_shader_setup` waits (FLUSH) until the packets of the last program are read: the layouts overlap |
+
+Batches of N = 32: `lvl2` 176 indices, `mtex` 192, `mskin` (103 uniform quadwords) 96. The model
+demo (`demos/model/model.c`, `tools/model/gltf2mxm.py`) makes its clusters for the smallest.
+
 ## Compute programs (VU0 or VU1)
 
 ```hlsl
@@ -76,6 +97,8 @@ is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 | Reassociation | HLSL lets the compiler reassociate float math; `mul()` keeps the order of the columns. Code that needs the exact order, like a hash of a fraction, says `#pragma clang fp reassociate(off)`, for a file (`demos/procgen/fbm.hlsl`) or a `{ }` block (`demos/procgen/dust.hlsl`, `demos/procgen/water.hlsl`) |
 | Constant tables | indexed by constants only (`static const` arrays at run-time indices are not supported) |
 | Spills | none by default: a program that needs more than the 31 VF registers is an error; reserve `-vu-spill-qw=N` quadwords at the top of data memory |
+| Integer vectors | done lane by lane in the 16-bit VI registers (`uint4 j = v.jnt * 4`); a `uint4` input lane is read with ILW |
+| Uniform arrays | indexed at run time (`joint[j.x]`: ILW, then LQ at the index) |
 | Names | `clip` is an HLSL function; a uniform needs another name (`cull`) |
 
 ## Programs
@@ -86,4 +109,6 @@ is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 | `demos/procgen/tf0..2.hlsl`, `water.hlsl`, `tree.hlsl`, `dustdraw.hlsl` | VU1 | procgen terrain, water, trees, dust sprites | `tests/ps2/shader2.c`, `tests/ps2/dust.c` |
 | `demos/procgen/fbm.hlsl` | VU0 | terrain noise | `tests/ps2/noise.c` |
 | `demos/procgen/dust.hlsl` | VU0 | dust motes | `tests/ps2/dust.c` |
+| `demos/model/mflat.hlsl`, `mlit.hlsl`, `mtex.hlsl`, `mskin.hlsl` | VU1, also indexed | the model demo: colour; one light; texture; skinning (4 joints of a 24-joint palette) | `tests/ps2/ishader.c` (indexed = strips bit for bit, every batch size; mskin against the EE), `demos/model/model.c` (the same picture both ways) |
+| `lvl0..2` indexed | VU1 | | `tests/ps2/ishader.c` |
 | `tests/ps2/floor.hlsl`, `nest.hlsl` | VU0 | floor, nested run-time loops | `tests/ps2/floor.c`, `tests/ps2/loops.c` |

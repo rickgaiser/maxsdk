@@ -20,6 +20,16 @@ Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with
 `make batch` builds `batch/ps2batch.elf`: all PS2 tests, the phase 2–5 probes and the demos
 (spin, scene, allunits) in one ELF, so one PS2 run covers them.
 
+Each demo has its own directory in `demos/` (`demos/common/`: what several use):
+
+| Demo | |
+|---|---|
+| `spin`, `scene`, `allunits` | phase 3, 6, 7 |
+| `procgen` (`procgen.c`, `levels.c`) | generated terrain flight, the VU1 shader levels |
+| `model` | a glTF model (`tools/model/gltf2mxm.py`; built in: the Khronos Fox), turning and walking, drawn with HLSL shaders as strips or indexed (`opt -vu-indexed`), up to 16 × 16 copies; the vertices and triangles a second of each. `ps2client execee host:model.elf host:<model>.mxm` loads another model. `make model-record` builds `model_rec1.elf` / `model_rec8.elf`, which save 90 frames as `host:rec_*.tga` (`tools/model/frames2video.py` makes a GIF or MP4) |
+
+The model converter needs Python 3 and Pillow.
+
 Floating point: build with `-ffinite-math-only` (the Makefile does). The R5900 FPU has no INF/NaN,
 so clang only uses it for finite math, and otherwise calls soft-float helpers that libmx does not
 have.
@@ -55,6 +65,8 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | `crt/`, `ld/` | crt0 and the linker script |
 | `tests/host/`, `tests/ps2/` | host tests, PCSX2/PS2 tests |
 | `probe/` | one ELF per hardware question; results go to `docs/` |
+| `demos/<name>/` | the demos, one directory each (`demos/common/`: shared VU code and headers) |
+| `tools/model/` | glTF → MXM model converter, frames → video |
 
 ## Decisions (PLAN_MAXSDK.md section 7)
 
