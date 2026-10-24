@@ -40,8 +40,17 @@ int mx_tty_write(const char *s, u32 n);
 #define MX_FIO_WRONLY 0x0002
 #define MX_FIO_CREAT 0x0200
 #define MX_FIO_TRUNC 0x0400
+#define MX_FIO_SEEK_SET 0
+#define MX_FIO_SEEK_CUR 1
+#define MX_FIO_SEEK_END 2
 int mx_fio_open(const char *path, int flags);
 int mx_fio_write(int fd, const void *data, u32 n);
+/* Read up to n bytes into data (any alignment, room for n bytes); returns the
+   bytes read (fewer at the end of the file, and then the bytes of data after
+   them may have changed). */
+int mx_fio_read(int fd, void *data, u32 n);
+/* Returns the new position: mx_fio_lseek(fd, 0, MX_FIO_SEEK_END) is the size. */
+int mx_fio_lseek(int fd, s32 offset, int whence);
 int mx_fio_close(int fd);
 
 #endif

@@ -33,7 +33,9 @@
 #define FILEIO_SID 0x80000001u
 #define FILEIO_OPEN 0
 #define FILEIO_CLOSE 1
+#define FILEIO_READ 2
 #define FILEIO_WRITE 3
+#define FILEIO_LSEEK 4
 
 #define RPC_PKT_SIZE 64
 #define NPKT 8
@@ -369,6 +371,101 @@ int mx_fio_open(const char *path, int flags) {
   if (mx_sif_call(&fio, FILEIO_OPEN, a, sizeof *a, (void *)r, 4) < 0)
     return -1;
   return r[0];
+}
+
+/* READ: the IOP sends the 16-byte aligned middle of the data by SIF DMA to
+   ptr, and the parts before and after it in the record at read_data (the EE
+   copies them). The parts are those of the size asked for: after a short
+   read (the end of the file) the DMA ends on the quadword after the last byte
+   read, and the part after it is not data. */
+struct fio_read_data {
+  u32 size1, size2;
+  u32 dest1, dest2;
+  u8 buf1[16], buf2[16];
+};
+static struct {
+  s32 fd;
+  u32 ptr;
+  s32 size;
+  u32 read_data;
+} rd_arg MX_ALIGNED(64);
+static struct fio_read_data rd_data MX_ALIGNED(64);
+
+/* One READ of at most n bytes; returns the bytes read. */
+static int fio_read1(int fd, u8 *d, u32 n) {
+  /* the IOP's DMA must not meet dirty lines, nor the EE stale ones after it */
+  mx_dcache_writeback(d, n);
+  mx_dcache_invalidate(d, n);
+  volatile struct fio_read_data *rd = MX_UNCACHED(&rd_data);
+  rd->size1 = rd->size2 = 0;
+  __typeof__(rd_arg) *a = MX_UNCACHED(&rd_arg);
+  a->fd = fd;
+  a->ptr = (u32)(uintptr_t)d;
+  a->size = (s32)n;
+  a->read_data = (u32)(uintptr_t)&rd_data;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_READ, a, sizeof *a, (void *)r, 4) < 0)
+    return -1;
+  int got = r[0];
+  mx_dcache_invalidate(d, n);
+  if (got > 0) {
+    u8 *end = d + got, *d1 = (u8 *)(uintptr_t)rd->dest1, *d2 = (u8 *)(uintptr_t)rd->dest2;
+    for (u32 i = 0; i < rd->size1 && i < 16 && d1 + i < end; i++)
+      d1[i] = rd->buf1[i];
+    if (d2 >= d && d2 + rd->size2 <= end)
+      for (u32 i = 0; i < rd->size2 && i < 16; i++)
+        d2[i] = rd->buf2[i];
+  }
+  return got;
+}
+
+int mx_fio_read(int fd, void *data, u32 n) {
+  if (fio_bind() < 0)
+    return -1;
+  u8 *d = data;
+  u32 total = 0;
+  while (n) {
+    u32 len = n > 0x10000 ? 0x10000 : n;
+    int got = fio_read1(fd, d, len);
+    if (got < 0)
+      return total ? (int)total : got;
+    total += (u32)got;
+    if ((u32)got < len)
+      break; /* the end of the file */
+    d += len;
+    n -= len;
+  }
+  return (int)total;
+}
+
+static int fio_lseek1(int fd, s32 offset, int whence) {
+  static s32 ls_arg[4] MX_ALIGNED(64);
+  volatile s32 *a = (volatile s32 *)MX_UNCACHED(ls_arg);
+  a[0] = fd;
+  a[1] = offset;
+  a[2] = whence;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_LSEEK, (void *)a, 16, (void *)r, 4) < 0)
+    return -1;
+  return r[0];
+}
+
+int mx_fio_lseek(int fd, s32 offset, int whence) {
+  if (fio_bind() < 0)
+    return -1;
+  /* ps2client (ps2link's host) takes a negative offset from the current
+     position or the end as a huge positive one: it answers with the right
+     position, but its file is then past the end (docs/bios.md). From the
+     position itself instead. */
+  if (offset < 0 && whence != MX_FIO_SEEK_SET) {
+    int base = fio_lseek1(fd, 0, whence);
+    if (base < 0)
+      return base;
+    if (base + offset < 0)
+      return -1;
+    return fio_lseek1(fd, base + offset, MX_FIO_SEEK_SET);
+  }
+  return fio_lseek1(fd, offset, whence);
 }
 
 int mx_fio_close(int fd) {
