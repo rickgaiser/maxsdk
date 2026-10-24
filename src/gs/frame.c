@@ -193,11 +193,64 @@ u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *
 }
 
 void mx_frame_shader_setup(const struct mx_shader *s) {
+  /* the programs' layouts differ: the inputs of s, or the uniforms and the
+     table of an indexed one, may be where the GIF still reads a packet of
+     the last program */
   u64 *c = mx_frame_reserve(2);
-  c = mx_e_cnt(c, 1, mx_vif_base(0), mx_vif_offset(s->buf_qw));
-  c = mx_e_vif4(c, mx_vif_stcycl(1, 1), 0, 0, 0);
+  c = mx_e_cnt(c, 1, mx_vif_flush(), mx_vif_base(0));
+  c = mx_e_vif4(c, mx_vif_offset(s->buf_qw), mx_vif_stcycl(1, 1), 0, 0);
   mx_frame_commit(c);
   mx_frame_mpg(s->code, s->code_bytes, s->entry);
+}
+
+u64 *mx_shader_e_uniforms(u64 *c, const struct mx_shader *s, u32 block, const void *uni) {
+  c = mx_e_cnt(c, s->uni_qw, mx_vif_stcycl(1, 1),
+               mx_vif_unpack(MX_UNPACK_V4_32, block, s->uni_qw, 0));
+  const u64 *u = uni;
+  for (u32 i = 0; i < s->uni_qw; i++)
+    c = mx_e_qw(c, u[2 * i], u[2 * i + 1]);
+  return c;
+}
+
+u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, u32 prim, u32 block,
+                        const void *const *streams, const struct mx_ibatch *b) {
+  u32 m = (b->nv + s->align - 1) / s->align * s->align, iq = (b->ni + 15) / 16;
+  c = mx_e_cnt(c, 2, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, 0, 2, MX_UNPACK_FLG));
+  c = mx_e_qw(c, mx_giftag(b->ni, 1, (s32)prim, MX_GIF_FLG_PACKED, s->nreg), s->regs);
+  /* the counts: vertices, index quadwords (four indices each), the block */
+  c = mx_e_w4(c, b->nv, (b->ni + 3u) / 4, block, 0);
+  for (u32 i = 0; i < s->nin; i++) {
+    const struct mx_shader_in *in = &s->in[i];
+    const u8 *at = (const u8 *)streams[i] + b->first * in->bytes;
+#ifdef MX_DEBUG
+    if ((uintptr_t)at & 15)
+      mx__emit_overflow(__FILE__, __LINE__);
+#endif
+    c = mx_e_ref(c, at, m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
+                 mx_vif_unpack(in->fmt, s->in_at + i, m,
+                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0)));
+  }
+  /* the indices: 16 bytes are four quadwords of UNPACK V4-8 */
+  c = mx_e_ref(c, b->idx, iq, mx_vif_stcycl(1, 1),
+               mx_vif_unpack(MX_UNPACK_V4_8, s->idx_at, 4 * iq, MX_UNPACK_FLG | MX_UNPACK_USN));
+  return mx_e_cnt(c, 0, 0, mx_vif_mscal(s->entry));
+}
+
+/* The uniform block of the last indexed draw: 0 or 1. */
+static u32 iblock;
+
+void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
+                           const void *const *streams, const struct mx_ibatch *b, u32 n) {
+  if (!n)
+    return; /* a draw without batches must not take a block */
+  iblock ^= 1;
+  u32 block = s->const_at + iblock * s->uni_qw;
+  if (s->uni_qw)
+    mx_frame_commit(mx_shader_e_uniforms(mx_frame_reserve(mx_shader_uniforms_qw(s)), s, block, uni));
+  for (u32 i = 0; i < n; i++) {
+    u64 *c = mx_frame_reserve(mx_shader_ibatch_qw(s));
+    mx_frame_commit(mx_shader_e_ibatch(c, s, prim, block, streams, &b[i]));
+  }
 }
 
 void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,

@@ -61,9 +61,17 @@ $(OUT)/vu/%.o: $(OUT)/vu/%.bin
 # from section .vu.header, wrapped like the microcode above. HLSL_VU0 lists
 # the programs for VU0; the others run on VU1. (-Wno-deprecated-builtins:
 # clang's own HLSL headers use them for max and min.)
+#
+# HLSL_IX: vertex programs that are also built indexed (docs/hlsl.md), from
+# the same <name>.hlsl as program <name>_ix: IX_N vertices per batch (or
+# IX_N_<name>), the header's macros VU_IX_<NAME>_..., MX_VU_SHADER(IX_<NAME>,
+# <name>_ix_vu, <name>_ix_vu_end).
 HLSLS     := $(wildcard $(HERE)/tests/ps2/*.hlsl $(HERE)/demos/*/*.hlsl)
-HLSL_OBJS := $(patsubst %.hlsl,$(OUT)/hlsl/%.o,$(notdir $(HLSLS)))
-HLSL_HDRS := $(patsubst %.hlsl,$(OUT)/hlsl/%.h,$(notdir $(HLSLS)))
+HLSL_IX   := lvl0 lvl1 lvl2 mflat mlit mtex mskin
+IX_N      := 32
+HLSL_NAMES = $(basename $(notdir $(HLSLS))) $(addsuffix _ix,$(HLSL_IX))
+HLSL_OBJS := $(patsubst %,$(OUT)/hlsl/%.o,$(HLSL_NAMES))
+HLSL_HDRS := $(patsubst %,$(OUT)/hlsl/%.h,$(HLSL_NAMES))
 HLSL_VU0  := fbm dust floor nest
 vpath %.hlsl $(HERE)/tests/ps2 $(DEMO_DIRS)
 CFLAGS   += -I$(OUT)/hlsl
@@ -76,6 +84,12 @@ $(OUT)/hlsl/%.spv.ll: %.hlsl $(HERE)/include/vu.hlsli $(LLVM)/clang
 
 $(OUT)/hlsl/%.vu.ll: $(OUT)/hlsl/%.spv.ll $(LLVM)/opt
 	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=$(VU_CPU) $< -S -o $@
+
+# the indexed program from the same SPIR-V (the shorter stem wins over the
+# rule above)
+$(OUT)/hlsl/%_ix.vu.ll: $(OUT)/hlsl/%.spv.ll $(LLVM)/opt
+	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=vu1 -vu-indexed=$(or $(IX_N_$*),$(IX_N)) \
+	  -vu-header-prefix=VU_IX_ $< -S -o $@
 
 $(OUT)/hlsl/%.vu.elf: $(OUT)/hlsl/%.vu.ll $(LLVM)/llc
 	$(LLVM)/llc -mtriple=vu -mcpu=$(VU_CPU) -O3 -filetype=obj $< -o $@

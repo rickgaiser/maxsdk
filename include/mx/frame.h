@@ -126,6 +126,12 @@ struct mx_shader {
   u64 regs;    /* GIF register list */
   u32 nin;
   struct mx_shader_in in[MX_SHADER_MAX_IN];
+  u32 in_at;    /* the first input in a buffer */
+  u32 out_at;   /* the GIF packet: in a buffer; indexed, in data memory */
+  /* indexed programs (max_i != 0): MX_VU_ISHADER */
+  u32 max_i;    /* indices per batch */
+  u32 idx_at;   /* the indices in a buffer */
+  u32 const_at; /* the two uniform blocks, uni_qw apart */
 };
 
 /* From the layout header of vertex program NAME (llc's section .vu.header)
@@ -143,7 +149,31 @@ struct mx_shader {
                       .nreg = VU_##NAME##_NREG,                                                    \
                       .regs = VU_##NAME##_REGS,                                                    \
                       .nin = VU_##NAME##_NIN,                                                      \
-                      .in = VU_##NAME##_INPUTS})
+                      .in = VU_##NAME##_INPUTS,                                                    \
+                      .in_at = VU_##NAME##_IN_AT,                                                  \
+                      .out_at = VU_##NAME##_OUT_AT})
+
+/* An indexed vertex program (built with opt -vu-indexed=N: the HLSL_IX list
+   of the Makefile, docs/hlsl.md). */
+#define MX_VU_ISHADER(NAME, code_, code_end_)                                                      \
+  ((struct mx_shader){.code = (code_),                                                             \
+                      .code_bytes = (u32)((code_end_) - (code_)),                                  \
+                      .entry = VU_##NAME##_ENTRY,                                                  \
+                      .buf_qw = VU_##NAME##_BUF_QW,                                                \
+                      .uni_qw = VU_##NAME##_UNI_QW,                                                \
+                      .item_qw = VU_##NAME##_ITEM_QW,                                              \
+                      .out_qw = VU_##NAME##_OUT_QW,                                                \
+                      .max_n = VU_##NAME##_MAX_N,                                                  \
+                      .align = VU_##NAME##_ALIGN,                                                  \
+                      .nreg = VU_##NAME##_NREG,                                                    \
+                      .regs = VU_##NAME##_REGS,                                                    \
+                      .nin = VU_##NAME##_NIN,                                                      \
+                      .in = VU_##NAME##_INPUTS,                                                    \
+                      .in_at = VU_##NAME##_IN_AT,                                                  \
+                      .out_at = VU_##NAME##_OUT_AT,                                                \
+                      .max_i = VU_##NAME##_MAX_I,                                                  \
+                      .idx_at = VU_##NAME##_IDX_AT,                                                \
+                      .const_at = VU_##NAME##_CONST_AT})
 
 /* Quadwords of VIF packets that mx_shader_e_batch writes (the input data is
    referenced, not copied). */
@@ -156,7 +186,9 @@ u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *
                        const void *const *streams, u32 n);
 
 /* Set up VIF1 double buffering for s (BASE 0, OFFSET s->buf_qw) and upload
-   its code unless it is resident. */
+   its code unless it is resident. Waits (in the stream) until the batches
+   before it are drawn (FLUSH): s may use the memory where the GIF still
+   reads the packets of another program. */
 void mx_frame_shader_setup(const struct mx_shader *s);
 /* Draw n vertices of streams with s in the current frame, as one primitive
    (MX_GS_PRIM_TRISTRIP: batches overlap by 2 vertices; TRIANGLE: batches of
@@ -165,6 +197,35 @@ void mx_frame_shader_setup(const struct mx_shader *s);
    s->align - 1 vertices after the last one. */
 void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,
                           const void *const *streams, u32 n);
+
+/* ---- indexed shaders ----------------------------------------------------------- */
+
+/* A batch of an indexed program: nv <= s->max_n vertices from vertex first of
+   the streams (a multiple of s->align; nv rounded up to it are read), and
+   ni <= s->max_i indices at idx (quadword aligned, read in whole quadwords
+   of 16). An index is the vertex's number in the batch times s->out_qw.
+   Strips restart by repeating vertices; the primitive is any. */
+struct mx_ibatch {
+  u32 first;
+  u16 nv, ni;
+  const u8 *idx;
+};
+
+/* Quadwords of VIF packets that mx_shader_e_uniforms and mx_shader_e_ibatch
+   write. */
+MX_INLINE u32 mx_shader_uniforms_qw(const struct mx_shader *s) { return 1 + s->uni_qw; }
+MX_INLINE u32 mx_shader_ibatch_qw(const struct mx_shader *s) { return 5 + s->nin; }
+/* The uniforms of a draw into the block at VU address block (s->const_at, or
+   s->const_at + s->uni_qw: by turns, one per draw that has batches). */
+u64 *mx_shader_e_uniforms(u64 *c, const struct mx_shader *s, u32 block, const void *uni);
+/* One batch with the uniforms of block: the GIF tag (PRIM prim, NLOOP
+   b->ni) and the counts, the inputs, the indices, MSCAL. */
+u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, u32 prim, u32 block,
+                        const void *const *streams, const struct mx_ibatch *b);
+/* Draw n batches of an indexed program with the uniforms uni (copied into
+   the stream once). */
+void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
+                           const void *const *streams, const struct mx_ibatch *b, u32 n);
 
 /* ---- textures (PATH3) -------------------------------------------------------- */
 
