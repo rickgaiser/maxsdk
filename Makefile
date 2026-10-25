@@ -65,7 +65,9 @@ $(OUT)/vu/%.o: $(OUT)/vu/%.bin
 # HLSL_IX: vertex programs that are also built indexed (docs/hlsl.md), from
 # the same <name>.hlsl as program <name>_ix: IX_N vertices per batch (or
 # IX_N_<name>), the header's macros VU_IX_<NAME>_..., MX_VU_SHADER(IX_<NAME>,
-# <name>_ix_vu, <name>_ix_vu_end).
+# <name>_ix_vu, <name>_ix_vu_end). VU_OPT_FLAGS go to opt for every program
+# (e.g. -vu-contexts=1).
+VU_OPT_FLAGS ?=
 HLSLS     := $(wildcard $(HERE)/tests/ps2/*.hlsl $(HERE)/demos/*/*.hlsl)
 HLSL_IX   := lvl0 lvl1 lvl2 mflat mlit mtex mskin
 IX_N      := 32
@@ -83,13 +85,13 @@ $(OUT)/hlsl/%.spv.ll: %.hlsl $(HERE)/include/vu.hlsli $(LLVM)/clang
 	  -finclude-default-header -I$(HERE)/include -Wno-deprecated-builtins $< -o $@
 
 $(OUT)/hlsl/%.vu.ll: $(OUT)/hlsl/%.spv.ll $(LLVM)/opt
-	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=$(VU_CPU) $< -S -o $@
+	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=$(VU_CPU) $(VU_OPT_FLAGS) $< -S -o $@
 
 # the indexed program from the same SPIR-V (the shorter stem wins over the
 # rule above)
 $(OUT)/hlsl/%_ix.vu.ll: $(OUT)/hlsl/%.spv.ll $(LLVM)/opt
 	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=vu1 -vu-indexed=$(or $(IX_N_$*),$(IX_N)) \
-	  -vu-header-prefix=VU_IX_ $< -S -o $@
+	  -vu-header-prefix=VU_IX_ $(VU_OPT_FLAGS) $< -S -o $@
 
 $(OUT)/hlsl/%.vu.elf: $(OUT)/hlsl/%.vu.ll $(LLVM)/llc
 	$(LLVM)/llc -mtriple=vu -mcpu=$(VU_CPU) -O3 -filetype=obj $< -o $@

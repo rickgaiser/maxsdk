@@ -51,8 +51,8 @@ static int run(const struct mx_shader *s, u32 n, u32 *top) {
   u64 *c = chain;
   c = mx_e_cnt(c, 1, mx_vif_base(0), mx_vif_offset(s->buf_qw));
   c = mx_e_vif4(c, mx_vif_stcycl(1, 1), 0, 0, 0);
-  c = mx_shader_e_batch(c, s, mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, 0, 0, 0, 0, 0, 0, 0), uni, streams,
-                        n);
+  c = mx_shader_e_context(c, s, mx_shader_ctx(s, 0), mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, 0, 0, 0, 0, 0, 0, 0), uni);
+  c = mx_shader_e_batch(c, s, streams, n, 1);
   c = mx_e_end(c, 0, mx_vif_flush(), mx_vif_mark(mark));
   mx_dcache_writeback(chain, sizeof chain);
   mx_dcache_writeback(uni, sizeof uni);

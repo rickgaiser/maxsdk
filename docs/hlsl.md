@@ -18,7 +18,7 @@ llvm-objcopy --dump-section .vu.header=x.h
 ```hlsl
 #include "vu.hlsli"
 
-cbuffer Uniforms {          // VU_LVL2_MVP ..., from quadword 1 of the buffer
+cbuffer Uniforms {          // VU_LVL2_MVP ...: quadwords of the uniforms, from 0
     float4x4 mvp;           // column_major: one quadword per column
     float4 light;
 };
@@ -49,6 +49,13 @@ Out lvl2(In v) { ... }
 | The vertex index in the batch | `uint id : SV_VertexID` |
 
 The layout is the one `mx_frame_shader_draw` uses: `MX_VU_SHADER(NAME, name_vu, name_vu_end)`.
+A draw writes its **context** once: the GIF tag (PRIM, REGS; NLOOP 0) and the uniforms, into one of
+two contexts above the buffers, by turns, and names it with ITOP. Its first batch starts the program
+with MSCAL: the init takes the uniforms into registers, as ps2gl's `--enter ... --cont` code does.
+The other batches start with MSCNT and keep those registers. Each batch sends only its counts and
+its inputs; the program copies the context's GIF tag in front of its outputs with NLOOP = the
+vertex count. `opt -vu-contexts=1` (make `VU_OPT_FLAGS=-vu-contexts=1`) keeps one context, which
+a FLUSHE protects: more room for the buffers, but each draw waits for the one before.
 
 ## Indexed vertex programs (VU1)
 
@@ -60,7 +67,7 @@ VU1 cycles an index for 3 outputs). A vertex that the triangles share is transfo
 
 | | Indexed |
 |---|---|
-| Layout (llvm `VUEntryABI.md`) | each buffer: GIF tag, counts, inputs, indices; shared: one GIF packet (a batch waits with an XGKICK of an empty tag until the GIF has read the one before), two uniform blocks (one per draw, by turns: `counts.z`), the table |
+| Layout (llvm `VUEntryABI.md`) | each buffer: counts, inputs, indices; shared: one GIF packet (a batch waits with an XGKICK of an empty tag until the GIF has read the one before), the contexts (as strips), the table |
 | EE side (`<mx/frame.h>`) | `MX_VU_ISHADER(IX_NAME, ...)`, `mx_frame_shader_idraw(s, prim, uni, streams, batches, n)`, a `struct mx_ibatch` per batch: the first vertex (a multiple of `align`), the vertex and index counts, the indices |
 | Indices | bytes, UNPACK V4-8U, each the vertex times `OUT_QW`; sent in whole quadwords of 16; (N − 1) × `OUT_QW` ≤ 255 |
 | Strips | restart by repeating vertices (degenerate triangles); the gather does not look at the primitive |

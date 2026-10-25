@@ -116,7 +116,10 @@ struct mx_shader {
   u32 code_bytes;
   u32 entry;   /* 64-bit units */
   u32 buf_qw;  /* VU1 double buffer (VIF1 BASE 0, OFFSET buf_qw) */
-  u32 uni_qw;  /* uniforms after the GIF tag */
+  u32 uni_qw;  /* uniforms after the context's GIF tag */
+  u32 ctx_at;  /* the contexts: GIF tag (NLOOP 0) and uniforms, set once per draw */
+  u32 ctx_qw;  /* = 1 + uni_qw */
+  u32 nctx;    /* 2: used by turns; 1: a FLUSHE before writing it */
   u32 item_qw; /* = number of inputs */
   u32 out_qw;  /* = nreg */
   u32 max_n;   /* vertices per batch */
@@ -131,7 +134,6 @@ struct mx_shader {
   /* indexed programs (max_i != 0): MX_VU_ISHADER */
   u32 max_i;    /* indices per batch */
   u32 idx_at;   /* the indices in a buffer */
-  u32 const_at; /* the two uniform blocks, uni_qw apart */
 };
 
 /* From the layout header of vertex program NAME (llc's section .vu.header)
@@ -142,6 +144,9 @@ struct mx_shader {
                       .entry = VU_##NAME##_ENTRY,                                                  \
                       .buf_qw = VU_##NAME##_BUF_QW,                                                \
                       .uni_qw = VU_##NAME##_UNI_QW,                                                \
+                      .ctx_at = VU_##NAME##_CTX_AT,                                                \
+                      .ctx_qw = VU_##NAME##_CTX_QW,                                                \
+                      .nctx = VU_##NAME##_NCTX,                                                    \
                       .item_qw = VU_##NAME##_ITEM_QW,                                              \
                       .out_qw = VU_##NAME##_OUT_QW,                                                \
                       .max_n = VU_##NAME##_MAX_N,                                                  \
@@ -161,6 +166,9 @@ struct mx_shader {
                       .entry = VU_##NAME##_ENTRY,                                                  \
                       .buf_qw = VU_##NAME##_BUF_QW,                                                \
                       .uni_qw = VU_##NAME##_UNI_QW,                                                \
+                      .ctx_at = VU_##NAME##_CTX_AT,                                                \
+                      .ctx_qw = VU_##NAME##_CTX_QW,                                                \
+                      .nctx = VU_##NAME##_NCTX,                                                    \
                       .item_qw = VU_##NAME##_ITEM_QW,                                              \
                       .out_qw = VU_##NAME##_OUT_QW,                                                \
                       .max_n = VU_##NAME##_MAX_N,                                                  \
@@ -172,18 +180,29 @@ struct mx_shader {
                       .in_at = VU_##NAME##_IN_AT,                                                  \
                       .out_at = VU_##NAME##_OUT_AT,                                                \
                       .max_i = VU_##NAME##_MAX_I,                                                  \
-                      .idx_at = VU_##NAME##_IDX_AT,                                                \
-                      .const_at = VU_##NAME##_CONST_AT})
+                      .idx_at = VU_##NAME##_IDX_AT})
 
-/* Quadwords of VIF packets that mx_shader_e_batch writes (the input data is
-   referenced, not copied). */
-MX_INLINE u32 mx_shader_batch_qw(const struct mx_shader *s) { return 3 + s->uni_qw + s->nin; }
-/* One batch of n <= s->max_n vertices: the GIF tag (PRIM prim, NLOOP n, EOP)
-   and the uniforms into the next VU1 buffer (UNPACK with FLG), then each
-   input from streams[i] (vertex 0 of the batch, quadword aligned; n rounded
-   up to s->align vertices are read), then MSCAL. Returns the cursor. */
-u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *uni,
-                       const void *const *streams, u32 n);
+/* The VU address of context k (0 .. s->nctx - 1). */
+MX_INLINE u32 mx_shader_ctx(const struct mx_shader *s, u32 k) { return s->ctx_at + k * s->ctx_qw; }
+/* Quadwords of VIF packets that mx_shader_e_context and mx_shader_e_batch
+   write (the input data is referenced, not copied). */
+MX_INLINE u32 mx_shader_context_qw(const struct mx_shader *s) {
+  return (s->nctx == 1 ? 3 : 2) + s->ctx_qw;
+}
+MX_INLINE u32 mx_shader_batch_qw(const struct mx_shader *s) { return 3 + s->nin; }
+/* What a draw sets once, into the context at VU address ctx: the GIF tag
+   (PRIM prim, EOP; the program fills in NLOOP) and the uniforms uni (copied
+   into the stream); then ITOP ctx. The batches after it (until the next
+   context) use it. With s->nctx == 1 it waits (FLUSHE) until the batches
+   before it have ended. Returns the cursor. */
+u64 *mx_shader_e_context(u64 *c, const struct mx_shader *s, u32 ctx, u32 prim, const void *uni);
+/* One batch of n <= s->max_n vertices: the counts into the next VU1 buffer
+   (UNPACK with FLG), then each input from streams[i] (vertex 0 of the
+   batch, quadword aligned; n rounded up to s->align vertices are read), then
+   MSCAL for the first batch after a context (the program's init takes the
+   context into registers) and MSCNT for the others. Returns the cursor. */
+u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, const void *const *streams, u32 n,
+                       int first);
 
 /* Set up VIF1 double buffering for s (BASE 0, OFFSET s->buf_qw) and upload
    its code unless it is resident. Waits (in the stream) until the batches
@@ -211,19 +230,15 @@ struct mx_ibatch {
   const u8 *idx;
 };
 
-/* Quadwords of VIF packets that mx_shader_e_uniforms and mx_shader_e_ibatch
-   write. */
-MX_INLINE u32 mx_shader_uniforms_qw(const struct mx_shader *s) { return 1 + s->uni_qw; }
-MX_INLINE u32 mx_shader_ibatch_qw(const struct mx_shader *s) { return 5 + s->nin; }
-/* The uniforms of a draw into the block at VU address block (s->const_at, or
-   s->const_at + s->uni_qw: by turns, one per draw that has batches). */
-u64 *mx_shader_e_uniforms(u64 *c, const struct mx_shader *s, u32 block, const void *uni);
-/* One batch with the uniforms of block: the GIF tag (PRIM prim, NLOOP
-   b->ni) and the counts, the inputs, the indices, MSCAL. */
-u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, u32 prim, u32 block,
-                        const void *const *streams, const struct mx_ibatch *b);
+/* Quadwords of VIF packets that mx_shader_e_ibatch writes (the context:
+   mx_shader_e_context). */
+MX_INLINE u32 mx_shader_ibatch_qw(const struct mx_shader *s) { return 4 + s->nin; }
+/* One batch: the counts, the inputs, the indices, MSCAL (first) or MSCNT
+   (as mx_shader_e_batch). */
+u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, const void *const *streams,
+                        const struct mx_ibatch *b, int first);
 /* Draw n batches of an indexed program with the uniforms uni (copied into
-   the stream once). */
+   the stream once, with the context). */
 void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
                            const void *const *streams, const struct mx_ibatch *b, u32 n);
 

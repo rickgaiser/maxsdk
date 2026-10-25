@@ -104,7 +104,8 @@ static int run_strip(const struct prog *p, u32 n) {
   u64 *c = chain;
   c = mx_e_cnt(c, 1, mx_vif_base(0), mx_vif_offset(s->buf_qw));
   c = mx_e_vif4(c, mx_vif_stcycl(1, 1), 0, 0, 0);
-  c = mx_shader_e_batch(c, s, prim, uni, st, n);
+  c = mx_shader_e_context(c, s, mx_shader_ctx(s, 0), prim, uni);
+  c = mx_shader_e_batch(c, s, st, n, 1);
   u32 top;
   if (send(c, &top))
     return -1;
@@ -119,19 +120,21 @@ static int run_indexed(const struct prog *p, u32 nv, u32 ni, u32 blk, u32 buf) {
   const void *st[6];
   for (int i = 0; i < p->nin; i++)
     st[i] = stream(p->in[i]);
-  u32 here = s->const_at + blk * s->uni_qw, there = s->const_at + (blk ^ 1) * s->uni_qw;
+  u32 here = mx_shader_ctx(s, blk), there = mx_shader_ctx(s, blk ^ 1);
   u64 *c = chain;
   c = mx_e_cnt(c, 1, mx_vif_base(0), mx_vif_offset(s->buf_qw));
   c = mx_e_vif4(c, mx_vif_stcycl(1, 1), 0, 0, 0);
-  c = mx_shader_e_uniforms(c, s, here, uni);
-  c = mx_shader_e_uniforms(c, s, there, other);
+  /* the other context first: a batch runs with the context of the last
+     init before it */
+  c = mx_shader_e_context(c, s, there, prim, other);
   static u8 one[16] MX_ALIGNED(16);
   if (buf) {
     struct mx_ibatch f = {0, 1, 1, one};
-    c = mx_shader_e_ibatch(c, s, prim, there, st, &f);
+    c = mx_shader_e_ibatch(c, s, st, &f, 1);
   }
+  c = mx_shader_e_context(c, s, here, prim, uni);
   struct mx_ibatch b = {0, (u16)nv, (u16)ni, idx};
-  c = mx_shader_e_ibatch(c, s, prim, here, st, &b);
+  c = mx_shader_e_ibatch(c, s, st, &b, 1);
   u32 top;
   if (send(c, &top))
     return -1;

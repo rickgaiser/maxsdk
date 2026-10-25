@@ -60,12 +60,11 @@ extern const u8 model_fox[], model_fox_end[];
 #endif
 
 /* the uniforms are in the same places for the strip and the indexed
-   programs: from quadword 1 of a buffer, and from 0 of a block */
-_Static_assert(VU_MFLAT_MVP == VU_IX_MFLAT_MVP + 1 && VU_MFLAT_COL == VU_IX_MFLAT_COL + 1, "");
-_Static_assert(VU_MLIT_LIGHT == VU_IX_MLIT_LIGHT + 1 && VU_MLIT_AMB == VU_IX_MLIT_AMB + 1, "");
-_Static_assert(VU_MTEX_LIGHT == VU_IX_MTEX_LIGHT + 1 && VU_MTEX_AMB == VU_IX_MTEX_AMB + 1, "");
-_Static_assert(VU_MSKIN_JOINT == VU_IX_MSKIN_JOINT + 1 && VU_MSKIN_AMB == VU_IX_MSKIN_AMB + 1,
-               "");
+   programs (in their context) */
+_Static_assert(VU_MFLAT_MVP == VU_IX_MFLAT_MVP && VU_MFLAT_COL == VU_IX_MFLAT_COL, "");
+_Static_assert(VU_MLIT_LIGHT == VU_IX_MLIT_LIGHT && VU_MLIT_AMB == VU_IX_MLIT_AMB, "");
+_Static_assert(VU_MTEX_LIGHT == VU_IX_MTEX_LIGHT && VU_MTEX_AMB == VU_IX_MTEX_AMB, "");
+_Static_assert(VU_MSKIN_JOINT == VU_IX_MSKIN_JOINT && VU_MSKIN_AMB == VU_IX_MSKIN_AMB, "");
 #define JOINTS 24 /* demos/model/mskin.hlsl */
 _Static_assert(VU_IX_MSKIN_UNI_QW == VU_IX_MSKIN_JOINT + 4 * JOINTS, "");
 

@@ -168,15 +168,24 @@ void mx_frame_vu1_batch(const struct mx_kernel *k, u64 giftag, u64 regs, const v
 
 /* ---- shaders ------------------------------------------------------------------ */
 
-u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *uni,
-                       const void *const *streams, u32 n) {
-  u32 m = (n + s->align - 1) / s->align * s->align;
-  c = mx_e_cnt(c, 1 + s->uni_qw, mx_vif_stcycl(1, 1),
-               mx_vif_unpack(MX_UNPACK_V4_32, 0, 1 + s->uni_qw, MX_UNPACK_FLG));
-  c = mx_e_qw(c, mx_giftag(n, 1, (s32)prim, MX_GIF_FLG_PACKED, s->nreg), s->regs);
+u64 *mx_shader_e_context(u64 *c, const struct mx_shader *s, u32 ctx, u32 prim, const void *uni) {
+  /* one context: the batches before it end first */
+  if (s->nctx == 1)
+    c = mx_e_cnt(c, 0, 0, mx_vif_flushe());
+  c = mx_e_cnt(c, s->ctx_qw, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, ctx, s->ctx_qw, 0));
+  c = mx_e_qw(c, mx_giftag(0, 1, (s32)prim, MX_GIF_FLG_PACKED, s->nreg), s->regs);
   const u64 *u = uni;
   for (u32 i = 0; i < s->uni_qw; i++)
     c = mx_e_qw(c, u[2 * i], u[2 * i + 1]);
+  /* the program's init (at the first batch) and each batch read it at ITOP */
+  return mx_e_cnt(c, 0, 0, mx_vif_itop(ctx));
+}
+
+u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, const void *const *streams, u32 n,
+                       int first) {
+  u32 m = (n + s->align - 1) / s->align * s->align;
+  c = mx_e_cnt(c, 1, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
+  c = mx_e_w4(c, n, 0, 0, n);
   /* input i of every vertex goes to quadword i of its item */
   for (u32 i = 0; i < s->nin; i++) {
     const struct mx_shader_in *in = &s->in[i];
@@ -186,10 +195,10 @@ u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, u32 prim, const void *
       mx__emit_overflow(__FILE__, __LINE__);
 #endif
     c = mx_e_ref(c, streams[i], m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
-                 mx_vif_unpack(in->fmt, 1 + s->uni_qw + i, m,
+                 mx_vif_unpack(in->fmt, s->in_at + i, m,
                                MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0)));
   }
-  return mx_e_cnt(c, 0, mx_vif_stcycl(1, 1), mx_vif_mscal(s->entry));
+  return mx_e_cnt(c, 0, mx_vif_stcycl(1, 1), first ? mx_vif_mscal(s->entry) : mx_vif_mscnt());
 }
 
 void mx_frame_shader_setup(const struct mx_shader *s) {
@@ -203,22 +212,12 @@ void mx_frame_shader_setup(const struct mx_shader *s) {
   mx_frame_mpg(s->code, s->code_bytes, s->entry);
 }
 
-u64 *mx_shader_e_uniforms(u64 *c, const struct mx_shader *s, u32 block, const void *uni) {
-  c = mx_e_cnt(c, s->uni_qw, mx_vif_stcycl(1, 1),
-               mx_vif_unpack(MX_UNPACK_V4_32, block, s->uni_qw, 0));
-  const u64 *u = uni;
-  for (u32 i = 0; i < s->uni_qw; i++)
-    c = mx_e_qw(c, u[2 * i], u[2 * i + 1]);
-  return c;
-}
-
-u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, u32 prim, u32 block,
-                        const void *const *streams, const struct mx_ibatch *b) {
+u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, const void *const *streams,
+                        const struct mx_ibatch *b, int first) {
   u32 m = (b->nv + s->align - 1) / s->align * s->align, iq = (b->ni + 15) / 16;
-  c = mx_e_cnt(c, 2, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, 0, 2, MX_UNPACK_FLG));
-  c = mx_e_qw(c, mx_giftag(b->ni, 1, (s32)prim, MX_GIF_FLG_PACKED, s->nreg), s->regs);
-  /* the counts: vertices, index quadwords (four indices each), the block */
-  c = mx_e_w4(c, b->nv, (b->ni + 3u) / 4, block, 0);
+  /* the counts: vertices, -, index quadwords (four indices each), indices */
+  c = mx_e_cnt(c, 1, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
+  c = mx_e_w4(c, b->nv, 0, (b->ni + 3u) / 4, b->ni);
   for (u32 i = 0; i < s->nin; i++) {
     const struct mx_shader_in *in = &s->in[i];
     const u8 *at = (const u8 *)streams[i] + b->first * in->bytes;
@@ -233,23 +232,28 @@ u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, u32 prim, u32 block,
   /* the indices: 16 bytes are four quadwords of UNPACK V4-8 */
   c = mx_e_ref(c, b->idx, iq, mx_vif_stcycl(1, 1),
                mx_vif_unpack(MX_UNPACK_V4_8, s->idx_at, 4 * iq, MX_UNPACK_FLG | MX_UNPACK_USN));
-  return mx_e_cnt(c, 0, 0, mx_vif_mscal(s->entry));
+  return mx_e_cnt(c, 0, 0, first ? mx_vif_mscal(s->entry) : mx_vif_mscnt());
 }
 
-/* The uniform block of the last indexed draw: 0 or 1. */
-static u32 iblock;
+/* The context of the last draw: 0 or 1 (by turns, with two). */
+static u32 ctx_turn;
+
+/* The context of a draw that has batches (a draw without must not take one:
+   see llvm VUEntryABI.md), into the stream. */
+static void draw_context(const struct mx_shader *s, u32 prim, const void *uni) {
+  ctx_turn = s->nctx > 1 ? ctx_turn ^ 1 : 0;
+  u32 ctx = mx_shader_ctx(s, ctx_turn);
+  mx_frame_commit(mx_shader_e_context(mx_frame_reserve(mx_shader_context_qw(s)), s, ctx, prim, uni));
+}
 
 void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
                            const void *const *streams, const struct mx_ibatch *b, u32 n) {
   if (!n)
-    return; /* a draw without batches must not take a block */
-  iblock ^= 1;
-  u32 block = s->const_at + iblock * s->uni_qw;
-  if (s->uni_qw)
-    mx_frame_commit(mx_shader_e_uniforms(mx_frame_reserve(mx_shader_uniforms_qw(s)), s, block, uni));
+    return;
+  draw_context(s, prim, uni);
   for (u32 i = 0; i < n; i++) {
     u64 *c = mx_frame_reserve(mx_shader_ibatch_qw(s));
-    mx_frame_commit(mx_shader_e_ibatch(c, s, prim, block, streams, &b[i]));
+    mx_frame_commit(mx_shader_e_ibatch(c, s, streams, &b[i], i == 0));
   }
 }
 
@@ -267,6 +271,9 @@ void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,
     step = size;
   }
   const void *at[MX_SHADER_MAX_IN];
+  if (!n)
+    return;
+  draw_context(s, prim, uni);
   for (u32 v = 0; v < n; v += step) {
     u32 k = n - v < size ? n - v : size;
     if (type == MX_GS_PRIM_TRISTRIP && v && k < 3)
@@ -274,7 +281,7 @@ void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,
     for (u32 i = 0; i < s->nin; i++)
       at[i] = (const u8 *)streams[i] + v * s->in[i].bytes;
     u64 *c = mx_frame_reserve(mx_shader_batch_qw(s));
-    mx_frame_commit(mx_shader_e_batch(c, s, prim, uni, at, k));
+    mx_frame_commit(mx_shader_e_batch(c, s, at, k, v == 0));
     if (v + k >= n)
       break;
   }

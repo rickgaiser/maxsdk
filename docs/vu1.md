@@ -98,3 +98,43 @@ Later (PLAN_PROCGEN P4/P5, PS2, 2026-10-23), same measurement:
 | Fact | Value | Conditions | Source | Date |
 |---|---|---|---|---|
 | VU1 waiting at XGKICK for the GIF (VPU-STAT.VGW1, sampled as `MX_TS_VU1GW`) | 0–6 % of the time for small triangles (A), 3–14 % with larger ones (B); 6 % in procgen's max count | | `demos/procgen/levels.c`, `demos/procgen/procgen.c` | 2026-10-23 |
+
+## Draw contexts (PS2, 2026-10-25)
+
+HLSL vertex programs take the GIF tag and the uniforms from a context that the EE writes once
+per draw (llvm `VUEntryABI.md`), not from every batch. EE cycles; `demos/procgen/levels.c`
+(scene A) and `demos/model/model.c` (8 x 8 copies, no vsync), the same build otherwise.
+
+| | Uniforms in every batch | Two contexts (default) | One context (FLUSHE per draw) |
+|---|---|---|---|
+| levels L0 / L1 / L2 / L3 / tf0, cycles per vertex | 9.67 / 18.59 / 21.96 / 49.50 / 12.23 | 9.62 / 18.64 / 22.02 / 49.57 / 12.27 | |
+| model mflat strips: fps, EE busy | 463.6, 31 % | 462.6, 27 % | 434.2, 25 % |
+| model mskin strips (104 uniform qw): fps, EE busy | 21.9, 13 % | 21.9, 7 % | 21.8, 6 % |
+| model mskin indexed: fps | 46.3 | 46.3 | 45.7 |
+| mskin strip vertices per batch | 48 | 48 | 55 |
+
+Consequence: VU1 is the limit in all of these (99 %), so the frame rate stays; the EE no longer
+copies the uniforms into every batch (mskin strips: half the EE time). One context gives the
+buffers more room but costs up to 6 % (the pipeline drains at every draw): two is the default.
+
+Then (stage 2) the program loads the uniforms once per draw: MSCAL for a draw's first batch (the
+init, then the batch), MSCNT for the others, which continue after the E bit of the batch before
+with its registers (llvm `VUEntryABI.md`):
+
+| | Two contexts (above) | + init once per draw |
+|---|---|---|
+| levels L0 / L1 / L2 / L3 / tf0, cycles per vertex | 9.62 / 18.64 / 22.02 / 49.57 / 12.27 | 9.64 / 18.59 / 21.99 / 49.41 / 12.24 |
+| model mflat / mlit / mtex / mskin strips, fps | 462.6 / 77.9 / 76.6 / 21.9 | 463.7 / 78.0 / 76.7 / 21.9 |
+| model mflat / mskin indexed, fps | 273.2 / 46.3 | 274.5 / 45.7 |
+
+The batch start is 9 words instead of ~15 (lvl1), which is within the noise here: the pipelined
+loop's prologue and epilogue (lvl1 ~90 words around a kernel of 17) dominate the cost of a batch.
+
+Found on the way (PS2):
+* An MSCAL of the init alone, before the first batch, swaps the VIF1 buffers too: the first batch
+  then wrote the buffer whose packet the GIF still read. An XGKICK of an empty tag in the init
+  (waiting for the GIF) made it correct but cost 4-6 % (VU1 waited for the GIF at every draw), so
+  the init runs as part of the first batch.
+* With the batches a loop around the item loop, block placement rotated it so that the item loop
+  jumped to its exit, which the delay slot filler and the loop scheduler do not take: lvl1 22.86
+  cycles per vertex. llvm `VULoopLayout` moves the exit back behind the item loop.
