@@ -109,6 +109,8 @@ struct mx_shader_in {
   u8 fmt;   /* UNPACK vn << 2 | vl (MX_UNPACK_*) */
   u8 usn;   /* zero-extend */
   u8 bytes; /* per vertex in memory */
+  u32 mask; /* STMASK for the UNPACK, 0: none (fields 1.0 from COL: a float3
+               input from V2-32 is (x, y, 1)) */
 };
 #define MX_SHADER_MAX_IN 8
 struct mx_shader {
@@ -186,10 +188,18 @@ struct mx_shader {
 MX_INLINE u32 mx_shader_ctx(const struct mx_shader *s, u32 k) { return s->ctx_at + k * s->ctx_qw; }
 /* Quadwords of VIF packets that mx_shader_e_context and mx_shader_e_batch
    write (the input data is referenced, not copied). */
-MX_INLINE u32 mx_shader_context_qw(const struct mx_shader *s) {
-  return (s->nctx == 1 ? 3 : 2) + s->ctx_qw;
+MX_INLINE u32 mx_shader_masks(const struct mx_shader *s) {
+  u32 k = 0;
+  for (u32 i = 0; i < s->nin; i++)
+    k += s->in[i].mask != 0;
+  return k;
 }
-MX_INLINE u32 mx_shader_batch_qw(const struct mx_shader *s) { return 3 + s->nin; }
+MX_INLINE u32 mx_shader_context_qw(const struct mx_shader *s) {
+  return (s->nctx == 1 ? 3 : 2) + s->ctx_qw + (mx_shader_masks(s) ? 2 : 0);
+}
+MX_INLINE u32 mx_shader_batch_qw(const struct mx_shader *s) {
+  return 3 + s->nin + mx_shader_masks(s);
+}
 /* What a draw sets once, into the context at VU address ctx: the GIF tag
    (PRIM prim, EOP; the program fills in NLOOP) and the uniforms uni (copied
    into the stream); then ITOP ctx. The batches after it (until the next
@@ -232,7 +242,9 @@ struct mx_ibatch {
 
 /* Quadwords of VIF packets that mx_shader_e_ibatch writes (the context:
    mx_shader_e_context). */
-MX_INLINE u32 mx_shader_ibatch_qw(const struct mx_shader *s) { return 4 + s->nin; }
+MX_INLINE u32 mx_shader_ibatch_qw(const struct mx_shader *s) {
+  return 4 + s->nin + mx_shader_masks(s);
+}
 /* One batch: the counts, the inputs, the indices, MSCAL (first) or MSCNT
    (as mx_shader_e_batch). */
 u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, const void *const *streams,

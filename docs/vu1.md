@@ -138,3 +138,97 @@ Found on the way (PS2):
 * With the batches a loop around the item loop, block placement rotated it so that the item loop
   jumped to its exit, which the delay slot filler and the loop scheduler do not take: lvl1 22.86
   cycles per vertex. llvm `VULoopLayout` moves the exit back behind the item loop.
+
+## Vertex rate at the floor: vumax (PS2, 2026-10-25)
+
+`demos/vumax/vumax.c`: hand-scheduled kernels (`tools/vusched/vusched.py`, `vx_*.vsm`) next to the
+same programs in HLSL (`vh_*.hlsl`). The floor of a kernel is its upper (FMAC) ops per vertex;
+S1/S2 would be DIV-bound at 7 but take every second 1/w from the EFU (ERCPR), 4 vertices per
+24 cycles. In-place batches (the VIF puts each input into the quadword of its GIF register;
+colours never pass through VU registers), triple-buffered, no prologue/epilogue code (the loop
+runs S − 1 iterations more and stores into a pad and a slop). levels.c's scene A: 64 patches
+of 2174 strip vertices per frame, no vsync, EE cycles per vertex; c16 = V3-16 positions by
+STMOD offset (`docs/vif.md`), f32 = V3-32.
+
+| | Floor | Kernel alone | vsm c16 no XGKICK | vsm f32 no XGKICK | vsm c16 | vsm f32 | HLSL f32 | ps2gl (VCL, static) |
+|---|---|---|---|---|---|---|---|---|
+| S1 flat (XYZ2) | 6 | 5.92 | **6.55** | 6.81 | 7.00 | 7.09 | 7.70 | |
+| S2 Gouraud (+ colour) | 6 | 5.94 | **7.01** | 8.05 | 8.44 | 8.58 | 9.65 | |
+| S3 tex (+ ST) | 7 | 7.04 | 11.28 | 11.96 | 12.70 | 13.02 | 14.60 | fast_nolights 12 |
+| S3b tex, ST V2-16 + ITOF12 | 8 | 7.92 | 10.88 | 11.59 | 12.34 | 12.50 | 14.22 | |
+| S4 lit (1 light) | 11 | 10.98 | **11.93** | 12.04 | 12.25 | 12.33 | 17.55 | |
+| S5 lit + tex | 12 | 12.02 | **13.34** | 14.22 | 15.39 | 15.69 | 19.66 | fast 16 |
+| S6 SCEI (3 lights, clamp, ST, ADC clip) | 17 | 17.02 | **18.23** | 18.30 | 18.61 | 18.62 | 46.37 | scei 19 |
+
+"Kernel alone": the batch already in VU1 memory, MSCAL to the end, slope between 8·u and
+the full batch (`vumax k`); every kernel runs at its schedule. All 14 kernel/format pairs agree
+with the EE for every batch size (vumax part 1, PS2 and PCSX2).
+
+What limits each (busy shares of the same runs):
+* S1, S4, S6 (VU1 95–100 %): the batch: S − 1 extra kernel iterations (S = 3–4 stages) and
+  the program start, 0.5–1.2 cycles per vertex at 100–300 vertices per batch.
+* S2 with XGKICK: the GS (8 EE cycles per Gouraud triangle, GIF 98 %); without it 7.01.
+* S3, S3b, S5, and every f32 case: the VIF (VU1 60–88 %). The VIF is ~50 % slower while VU1
+  runs (`docs/vif.md`), so S3's three streams (7.6 VIF cycles alone) take 11.3. Compressed
+  inputs help everywhere (c16 vs f32); ST as V2-16 gains 0.4 for an extra upper op.
+* HLSL: S1–S5 at 1.1–1.5× the hand kernels; S6 at 2.5× (46.37). Since then S4–S6 are within
+  1.04–1.12× (next section).
+
+Found on the way:
+* An EE bug looked like a VU limit: the demo computed the batch size per draw with a loop of
+  integer divides (2 M cycles per frame), and VU1 sat 25–60 % idle. Check "EE in frame()"
+  before blaming the units.
+* The VU pipeline model of vusched (Q new from DIV + 7, P from ERCPR + 12, no interlock on
+  either; reads stall while a write to the register is in flight; ACC chains back to back)
+  matches the PS2: the kernels run at II/u with no stall.
+
+Per 60 Hz frame (4.92 M cycles) without the GS: S1 ~750 k, S2 ~700 k, S4 ~410 k, S6 ~270 k
+vertices; with it, S2 is GS-bound at ~580 k.
+
+## HLSL instruction selection after vumax (PS2, 2026-10-25)
+
+The HLSL twins of vumax against the hand kernels: what the compiler did with the instructions of
+the loop, and the fixes (llvm feature tree, `lib/Target/VU`). EE cycles per vertex, f32, with
+the GS (the "HLSL f32" column above); upper (FMAC) instructions per vertex in the loop.
+
+| | Hand kernel (upper) | HLSL before (upper) | HLSL after (upper) | vsm f32 | HLSL f32 before | HLSL f32 after |
+|---|---|---|---|---|---|---|
+| S1 flat | 6 | 6 | 6 | 7.09 | 7.70 | 7.70 |
+| S2 Gouraud | 6 | 6 | 6 | 8.57 | 9.65 | 9.65 |
+| S3 tex | 7 | 8 | 8 | 13.03 | 14.60 | **14.44** |
+| S4 lit | 11 | 16 | **11** | 12.33 | 17.55 | **12.79** |
+| S5 lit + tex | 12 | 18 | **12** | 15.71 | 19.66 | **15.66** |
+| S6 SCEI | 17 | 37 | **18** | 18.62 | 46.37 | **19.96** |
+
+What it took (each a general rule, with a lit test):
+* `float4(v.xyz, a.w)`: four field insertions (three ADDs with vf0 and a MULw) became one lower
+  MOVE.w (`MERGE_FIELDS`, `merge-fields.ll`): the vector that gives the most fields is the start.
+  In a loop, with `a` from outside of it and the result only stored, not even that: the ADD writes
+  x, y and z into a register that goes around the loop, whose w is set before it
+  (`VUInvariantFields`, `invariant-fields.ll`; S6 20.94 → 19.96, its loop 18 words, all upper).
+  Not when more instructions read the result: it can then live into the next iteration, and the
+  register is copied in every iteration (model MLIT 95.3 → 91.5 fps when tried). S5 is 15.49
+  without it, 15.66 with it, although its loop is a word shorter: VU1 is 77 % busy there, the
+  VIF is the limit.
+* The colour's FTOI0: `vu::rgba8` (vu.hlsli) adds 1.5 · 2^23, and the add joins the ambient
+  colour and the clamp by 255 (`magic-add.ll`): amb + M is computed before the loop and added
+  last (first, it rounded every sum after it: one colour of S6 was 2 off), min (x, 255) + M is
+  min (x + M, 255 + M).
+* ST: w is not read by the GIF and is no longer computed (MR32 gone); `float3 st :
+  TEXCOORD_V2_32` has z = 1.0 from the VIF (STMASK, COL), so `float4(st * q, 0)` is one MULq.
+  The masked UNPACK costs the VIF time: S3 (VIF-bound) 15.21 with it, 14.44 without, so its twin
+  keeps `float2 st`; S5 15.49 with, 15.56 without (VU1 98 %).
+* S6's clipping: `vu::clip` / `vu::clipped` / `vu::adc` (CLIPw, FCAND, bit 15) instead of
+  ten FMAC instructions and a static history (`clip.ll`). A CLIP and its test are one
+  instruction for the pipeliner (otherwise they ended in different stages, which the schedule
+  check rejects: II 28 for ResMII 20); the clipping flags have no interlock, VUHazards puts
+  empty words before a test closer than 4 cycles to its CLIP.
+* S6 has one upper instruction more than the hand kernel: `t + prm` before FTOI4 (the hand
+  kernel adds the offset with the magic number, which leaves 0x4B4 in the high bits of Z).
+
+Other programs, the same day: levels L0 9.63, L1 18.59, L2 22.07, L3 49.41 → **47.49**, tf0
+12.24 cycles per vertex; model MLIT strips 78.0 → **95.3** fps, MFLAT 463.7, MSKIN 21.9 (the
+same), MTEX 76.7 → 75.9 (the same pipelined II 45; the post-RA schedule of its 5× unrolled loop
+is 7 words longer, 227 against 220). Still to do (the plan's phases 2 and 3): the S − 1
+iterations of prologue and epilogue per batch, in-place triple buffers, DIV and ERCPR by turns
+for S1/S2, compressed inputs.

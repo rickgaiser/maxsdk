@@ -27,6 +27,8 @@ Each demo has its own directory in `demos/` (`demos/common/`: what several use):
 | `spin`, `scene`, `allunits` | phase 3, 6, 7 |
 | `procgen` (`procgen.c`, `levels.c`) | generated terrain flight, the VU1 shader levels |
 | `model` | a glTF model (`tools/model/gltf2mxm.py`; built in: the Khronos Fox), turning and walking, drawn with HLSL shaders as strips or indexed (`opt -vu-indexed`), up to 16 × 16 copies; the vertices and triangles a second of each. `ps2client execee host:model.elf host:<model>.mxm` loads another model. `make model-record` builds `model_rec1.elf` / `model_rec8.elf`, which save 90 frames as `host:rec_*.tga` (`tools/model/frames2video.py` makes a GIF or MP4) |
+| `vumax` | the VU1 vertex rate at the floor for six standard vertex programs (flat, Gouraud, textured, one light, lit + textured, ps2gl's SCEI): hand-scheduled kernels (`tools/vusched/vusched.py`) against the EE for every batch size, then throughput with and without the GS, next to the same programs in HLSL ([docs/vu1.md](docs/vu1.md)). Options: `s<k>` one scenario, `t` throughput only, `k` kernels alone, `c` plain DMA chain |
+| `gsmax` | the GS at the rates of the GS manual's performance tables (setup per primitive type, fill rate), over PATH1 ([docs/gif-gs.md](docs/gif-gs.md)) |
 
 The model converter needs Python 3 and Pillow.
 

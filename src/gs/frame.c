@@ -177,6 +177,11 @@ u64 *mx_shader_e_context(u64 *c, const struct mx_shader *s, u32 ctx, u32 prim, c
   const u64 *u = uni;
   for (u32 i = 0; i < s->uni_qw; i++)
     c = mx_e_qw(c, u[2 * i], u[2 * i + 1]);
+  /* the 1.0 that masked UNPACKs write (mx_shader_in.mask) */
+  if (mx_shader_masks(s)) {
+    c = mx_e_cnt(c, 1, 0, mx_vif_stcol());
+    c = mx_e_w4(c, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
+  }
   /* the program's init (at the first batch) and each batch read it at ITOP */
   return mx_e_cnt(c, 0, 0, mx_vif_itop(ctx));
 }
@@ -194,9 +199,12 @@ u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, const void *const *str
     if ((uintptr_t)streams[i] & 15)
       mx__emit_overflow(__FILE__, __LINE__);
 #endif
+    if (in->mask)
+      c = mx_e_cnt(c, 0, mx_vif_stmask(), in->mask);
     c = mx_e_ref(c, streams[i], m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
                  mx_vif_unpack(in->fmt, s->in_at + i, m,
-                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0)));
+                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0) |
+                                   (in->mask ? MX_UNPACK_MASK : 0)));
   }
   return mx_e_cnt(c, 0, mx_vif_stcycl(1, 1), first ? mx_vif_mscal(s->entry) : mx_vif_mscnt());
 }
@@ -225,9 +233,12 @@ u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, const void *const *st
     if ((uintptr_t)at & 15)
       mx__emit_overflow(__FILE__, __LINE__);
 #endif
+    if (in->mask)
+      c = mx_e_cnt(c, 0, mx_vif_stmask(), in->mask);
     c = mx_e_ref(c, at, m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
                  mx_vif_unpack(in->fmt, s->in_at + i, m,
-                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0)));
+                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0) |
+                                   (in->mask ? MX_UNPACK_MASK : 0)));
   }
   /* the indices: 16 bytes are four quadwords of UNPACK V4-8 */
   c = mx_e_ref(c, b->idx, iq, mx_vif_stcycl(1, 1),

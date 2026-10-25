@@ -64,3 +64,44 @@ per 60 Hz frame, 37 M/s). Strips cost one vertex per triangle, so PATH1 sending 
 per register) stays under the GS floor up to 4 registers per vertex: PACKED is enough, REGLIST
 gains nothing on PATH1. Lists send 3 vertices per triangle and become transfer-bound (12–18
 cycles per triangle on PATH1).
+
+## The GS at its manual rates: gsmax (PS2, 2026-10-25)
+
+`demos/gsmax/gsmax.c`: every row of GS User's Manual 1.3 "Maximum Performance", PATH1 (a
+packet in VU1 memory kicked 9 times by `probe/kickn.vsm`, (9 kicks − 1 kick) / 8), REGLIST,
+primitives of 1–2 pixels, Z test GEQUAL with writes. GS cycles = EE cycles / 2. Floor = the
+larger of the manual's setup cycles and the registers sent (one per GS cycle).
+
+| Case | Regs/prim | Manual | Measured (GS cycles) | M prims/s | Of floor |
+|---|---|---|---|---|---|
+| tri flat | 1 | 2 | 2.25 | 65.4 | 88 % |
+| tri flat fog | 1 | 2 | 2.34 | 62.9 | 85 % |
+| tri Gouraud / tex flat / tex Gouraud | 2 / 2 / 3 | 4 | 4.00 | 36.9 | 100 % |
+| tri Gouraud fog / tex fog / tex Gouraud fog | 2 / 2 / 3 | 5 | 5.00 | 29.5 | 99 % |
+| tri flat AA1 | 1 | 6 | 6.43 | 22.9 | 93 % |
+| tri Gouraud AA1 / tex AA1 | 2 | 8 | 8.00 | 18.4 | 100 % |
+| tri Gouraud fog AA1 / tex fog AA1 | 2 | 9 | 9.00 | 16.4 | 100 % |
+| line tex / tex Gouraud | 2 / 3 | 4 | 4.00 | 36.9 | 100 % |
+| line tex fog | 2 | 5 | 4.99 | 29.5 | 100 % |
+| line flat AA1 | 1 | 6 | 6.17 | 23.9 | 97 % |
+| line tex AA1 | 2 | 7 | **6.00** | 24.6 | faster than the manual |
+| sprite flat (2 × XYZ2) | 2 | 3 | 3.00 | 49.2 | 100 % |
+| sprite tex (2 × UV + XYZ2) | 4 | 3 | **6.00** | 24.6 | 66 % of the 4-register floor |
+| point flat (XYZ2) | 1 | 1 | 1.00 | 146.2 | 99 % |
+| point Gouraud / tex | 2 | 1 | 2.00 | 73.4 | transfer-bound |
+
+| Fill (Z + alpha blending on unless noted) | Measured px per GS cycle | Gpixel/s | Of 16 / 8 |
+|---|---|---|---|
+| untextured, one 640 × 224 sprite | 6.79 | 1.00 | 42 % |
+| untextured, sprites of one page (64 × 32) | 13.59 | 2.00 | 84 % |
+| untextured, columns 32 px wide | **15.29** | **2.25** | 95 % |
+| untextured, pages, no Z / alpha | 13.55 | 1.99 | 84 % |
+| textured (64 × 64 CT32, point), one sprite | 6.51 | 0.96 | 81 % |
+| textured, pages / columns 32 / pages no Z, alpha | 7.59 / **7.63** / 7.60 | 1.12 | 95 % |
+
+Consequences: the setup rates of the manual hold on PATH1 when every primitive sends no more
+registers than it has setup cycles (points: XYZ2 only; Gouraud/textured triangles: up to 4).
+Flat triangles fall short of 2 cycles (2.25). Textured sprites cost 6 GS cycles, not 3: draw
+large textured areas as columns, not as many small sprites. For fill, draw in 32-pixel-wide
+columns (graphtip: scan along the long side of a page): 95 % of the manual's pixel rate, one
+big sprite reaches 42 %. Z and alpha cost nothing at these rates.
