@@ -7,7 +7,7 @@ The model is made for VU1 programs built from HLSL (opt -vu-indexed): it is
 split into clusters of at most MAX_N vertices and MAX_I strip indices (the
 smallest of the --limits headers), each drawn as one indexed batch, and the
 same strips are also written as plain vertex streams, for the programs that
-draw strips. Every vertex attribute is a stream in the format of the shader
+draw strips (--layout indexed or strips: only one of the two). Every vertex attribute is a stream in the format of the shader
 inputs (demos/model/m*.hlsl):
 
     position V3-32, normal V4-8 (length 127), texture coordinates V2-16 (4.12),
@@ -16,8 +16,9 @@ inputs (demos/model/m*.hlsl):
 A skinned model has the positions and normals twice: in the rest pose (for the
 programs without skinning) and as the skin has them (mskin). Its animations
 are baked: the joint matrices (joint node's world matrix times its inverse
-bind matrix) at --fps frames a second. Each material has one texture, made to
-fit the GS memory (--tex-budget), and its mean colour. Needs Python 3 and
+bind matrix) at --fps frames a second. Each material has one texture (32
+bits, or --tex-format t8: 256 colours of a CLUT), made to fit the GS memory
+(--tex-budget), and its mean colour. Needs Python 3 and
 Pillow (PIL) for the images; nothing else.
 """
 
@@ -31,13 +32,14 @@ import re
 import struct
 import sys
 
-MAGIC = 0x314D584D  # "MXM1"
+MAGIC = 0x324D584D  # "MXM2"
 SKINNED = 1
+SINGLE = 2  # drawn once, not as copies
 
 # sections, in the order of mxm.h
 SECTIONS = ["POS", "NRM", "UV", "RPOS", "RNRM", "JNT", "WGT", "IDX", "CLUSTER",
             "SPOS", "SNRM", "SUV", "SRPOS", "SRNRM", "SJNT", "SWGT", "STRIP",
-            "MAT", "TEX", "PAL", "ANIM"]
+            "MAT", "TEX", "PAL", "ANIM", "PHYS", "COLL"]
 NSEC = 24
 HEADER_BYTES = 80 + 4 * NSEC  # struct mxm_header
 PAL_MAX = 30  # joints a palette record can hold
@@ -350,8 +352,25 @@ def main():
                     help="layout headers of the indexed programs (MAX_N, MAX_I)")
     ap.add_argument("--palette", type=int, default=24, help="joints of a palette (mskin)")
     ap.add_argument("--fps", type=float, default=60.0, help="frames of the baked animations")
-    ap.add_argument("--tex-budget", type=int, default=256 * 1024, help="bytes of textures")
+    ap.add_argument("--tex-budget", type=int, default=256 * 1024,
+                    help="bytes of GS memory of the textures (whole pages)")
     ap.add_argument("--tex-max", type=int, default=256, help="largest texture side")
+    ap.add_argument("--tex-format", choices=("ct32", "t8"), default="ct32",
+                    help="textures of 32 bits, or of 8 (256 colours of a CLUT)")
+    ap.add_argument("--layout", choices=("both", "indexed", "strips"), default="both",
+                    help="the sections written: the clusters, the strips, or both")
+    ap.add_argument("--phys", action="append", default=[], metavar="NAME=K,D[,G[,LIMIT[,R]]]",
+                    help="joints whose name contains NAME move by springs: stiffness K, "
+                         "damping D, gravity G, at most LIMIT radians from the animation, "
+                         "R thick (kept that far out of the capsules)")
+    ap.add_argument("--phys-len", type=float, default=0.05,
+                    help="the length of a spring joint without a child joint")
+    ap.add_argument("--collide", nargs="+", default=[], metavar="JOINT",
+                    help="joints (exact names) with a capsule the spring joints stay out of, "
+                         "fitted to the vertices they (and their joints below, down to the "
+                         "next of these or a spring joint) move most")
+    ap.add_argument("--single", action="store_true",
+                    help="the model is drawn once, not as copies (a big model)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -382,6 +401,8 @@ def main():
         jrest = [mat_mul(rest_world[j], ibm[k]) for k, j in enumerate(joints)]
     else:
         joints, ibm, jrest = [], [], []
+    if len(joints) > 65536:
+        fail("%d joints: a palette holds joint numbers of 16 bits" % len(joints))
 
     # ---- vertices and triangles, welded on their final (quantized) values
     verts, vindex, tris = [], {}, []  # tris: (a, b, c, material)
@@ -619,9 +640,10 @@ def main():
                                         mat_of[m], pal_of[ci], cc[0], cc[1], cc[2], cr))
         strips_by_group.setdefault((mat_of[m], pal_of[ci]), []).append([order[x] for x in
                                                                          [renum[y] for y in strip]])
-    # 3 more vertices after the last: a batch reads up to ALIGN - 1 more
-    if verts:
-        emit("", [0] * 4, 0)
+    # 3 more vertices after the last: a batch reads up to ALIGN - 1 more (the
+    # last one again: its joints are in the last cluster's palette)
+    if clusters:
+        emit("", [order[-1]] * 4, pal_of[-1])
     S["CLUSTER"] = bytearray(b"".join(cluster_recs))
 
     # the strip path: each (material, palette) one strip of its clusters'
@@ -656,9 +678,16 @@ def main():
         while p * 2 <= n:
             p *= 2
         return p
+
+    t8 = args.tex_format == "t8"
+
+    def pages(w, h):
+        # GS pages (8 KB) of a texture: T8 pages are 128 x 64, CT32 64 x 32
+        return (-(-max(w, 128) // 128) * -(-h // 64) if t8 else
+                -(-max(w, 64) // 64) * -(-h // 32))
     sizes = [[min(pow2(im.width), args.tex_max), min(pow2(im.height), args.tex_max)]
              for im, _ in imgs]
-    while sum(w * h * 4 for w, h in sizes) > args.tex_budget:
+    while sum(pages(w, h) for w, h in sizes) * 8192 > args.tex_budget:
         k = max(range(len(sizes)), key=lambda i: sizes[i][0] * sizes[i][1])
         if sizes[k][0] <= 8 and sizes[k][1] <= 8:
             break
@@ -666,30 +695,62 @@ def main():
             sizes[k][0] //= 2
         else:
             sizes[k][1] //= 2
+    # CSM1: the GS keeps entries 8 .. 15 and 16 .. 23 of each 32 swapped
+    csm1 = [(i & 0xE7) | (i & 8) << 1 | (i & 16) >> 1 for i in range(256)]
     mat_recs = []
-    for (im, fac), (w, h) in zip(imgs, sizes):
+    for mi, ((im, fac), (w, h)) in enumerate(zip(imgs, sizes)):
+        # the highlight's strength: smooth and metallic, strong
+        pbr = (g["materials"][mat_ids[mi]] if mat_ids[mi] >= 0 else {}).get(
+            "pbrMetallicRoughness", {})
+        rough, metal = pbr.get("roughnessFactor", 1.0), pbr.get("metallicFactor", 1.0)
+        spec = min(255, int(255 * (1 - rough) ** 2 * (0.4 + 0.6 * metal) * 1.5))
         im = im.resize((w, h), Image.LANCZOS)
         px = im.load()
-        out = bytearray()
+        rgba = []
         tot = [0, 0, 0]
         for y in range(h):
             for x in range(w):
                 r, gg, b, a = px[x, y]
-                c = [int(round(r * fac[0])), int(round(gg * fac[1])), int(round(b * fac[2]))]
+                c = [int(round(r * fac[0])), int(round(gg * fac[1])), int(round(b * fac[2])),
+                     int(round(a * fac[3]))]
                 for k in range(3):
                     tot[k] += c[k]
-                # GS alpha: 128 is 1.0
-                out += bytes(c + [int(round(a * fac[3] * 128 / 255))])
-        off = len(S["TEX"])
-        S["TEX"] += out
+                rgba.append(c)
         mean = [int(t / (w * h)) for t in tot]
-        mat_recs.append(struct.pack("<IHHBBBBI", off, int(math.log2(w)), int(math.log2(h)),
-                                    mean[0], mean[1], mean[2], 128, 0))
+        if t8:
+            src = Image.new("RGBA", (w, h))
+            src.putdata([tuple(c) for c in rgba])
+            q = src.quantize(256, method=Image.Quantize.FASTOCTREE,
+                             dither=Image.Dither.FLOYDSTEINBERG)
+            pal = q.getpalette("RGBA")[:256 * 4]
+            pal += [0] * (256 * 4 - len(pal))
+            clut = bytearray(1024)
+            for i in range(256):
+                r, gg, b, a = pal[4 * i:4 * i + 4]
+                # GS alpha: 128 is 1.0
+                clut[4 * csm1[i]:4 * csm1[i] + 4] = bytes([r, gg, b, (a * 128 + 127) // 255])
+            S["TEX"] += bytes((-len(S["TEX"])) % 16)
+            clut_off = len(S["TEX"])
+            S["TEX"] += clut
+            off = len(S["TEX"])
+            S["TEX"] += q.tobytes()
+        else:
+            off, clut_off = len(S["TEX"]), 0
+            S["TEX"] += bytes(v for c in rgba for v in c[:3] + [(c[3] * 128 + 127) // 255])
+        # texels less than fully opaque (GS alpha 128): drawn blended, after the rest
+        if t8:
+            used = set(q.tobytes())
+            alpha = any(pal[4 * i + 3] < 255 for i in used)
+        else:
+            alpha = any(c[3] < 255 for c in rgba)
+        mat_recs.append(struct.pack("<IBBBBBBBBI", off, int(math.log2(w)), int(math.log2(h)),
+                                    1 if t8 else 0, 1 if alpha else 0, mean[0], mean[1], mean[2],
+                                    spec, clut_off))
     S["MAT"] = bytearray(b"".join(mat_recs))
 
     # ---- palettes and animations
     for p in palettes:
-        S["PAL"] += struct.pack("<H", len(p)) + bytes(p) + bytes(PAL_MAX - len(p))
+        S["PAL"] += struct.pack("<H%dHH" % PAL_MAX, len(p), *(p + [0] * (PAL_MAX - len(p))), 0)
     anims = []
     if skin:
         def frame_mats(world):
@@ -773,6 +834,146 @@ def main():
                 print("gltf2mxm: anim %s: %d frames, root moves %.2f" %
                       (name, len(frames), math.sqrt(sum((a1[k] - a0[k]) ** 2 for k in range(3)))))
 
+    # ---- the spring joints, parents before children
+    if skin and args.phys:
+        specs = []
+        for spec in args.phys:
+            name, vals = spec.split("=", 1)
+            v = [float(x) for x in vals.split(",")]
+            specs.append((name, (v + [0.0, 0.6, 0.01][len(v) - 2:])[:5]))
+        jnum = {node: k for k, node in enumerate(joints)}
+
+        def depth(i):
+            d = 0
+            while sc.parent[i] >= 0:
+                i, d = sc.parent[i], d + 1
+            return d
+
+        def below(i):
+            out = []
+            for c in sc.nodes[i].get("children", []):
+                if c in jnum:
+                    out.append(jnum[c])
+                out += below(c)
+            return out
+        recs, descs = [], []
+        for node in sorted(joints, key=depth):
+            nm = sc.nodes[node].get("name", "")
+            par = next((v for k, v in specs if k in nm), None)
+            if par is None:
+                continue
+            m = rest_world[node]
+            head = [m[r][3] for r in range(3)]
+            kids = [c for c in sc.nodes[node].get("children", []) if c in jnum]
+            if kids:
+                tip = [rest_world[kids[0]][r][3] for r in range(3)]
+            else:
+                y = normalize([m[r][1] for r in range(3)])
+                tip = [head[r] + y[r] * args.phys_len for r in range(3)]
+            d = below(node)
+            recs.append((jnum[node], d, head, tip, par))
+            descs += d
+        base = 16 + 72 * len(recs)  # struct mxm_phys
+        S["PHYS"] = bytearray(struct.pack("<4I", len(recs), 0, 0, 0))
+        at = 0
+        for k, d, head, tip, par in recs:
+            S["PHYS"] += struct.pack("<HHI8f5f3I", k, len(d), base + 2 * at, *head, 1.0, *tip,
+                                     1.0, *par, 0, 0, 0)
+            at += len(d)
+        S["PHYS"] += struct.pack("<%dH" % len(descs), *descs)
+        print("gltf2mxm: %d spring joints, %d below them" % (len(recs), len(descs)))
+
+    # ---- the capsules: fitted to the vertices each joint moves most (their
+    # main direction, extent and distance to the axis)
+    if skin and args.collide:
+        names = {sc.nodes[node].get("name", ""): k for k, node in enumerate(joints)}
+        springs = [spec.split("=", 1)[0] for spec in args.phys]
+        coll = set(args.collide)
+
+        def owner(k):
+            # the capsule joint at or above joint k (twist joints, fingers: their
+            # bone's), none past a spring joint
+            i = joints[k]
+            while i >= 0:
+                nm = sc.nodes[i].get("name", "")
+                if nm in coll:
+                    return names.get(nm)
+                if any(sp in nm for sp in springs):
+                    return None
+                i = sc.parent[i]
+            return None
+        own = [owner(k) for k in range(len(joints))]
+        pts = {}
+        for v in verts:
+            j, w = v[5], v[6]
+            o = own[j[w.index(max(w))]]
+            if o is not None:
+                pts.setdefault(o, []).append(v[0])
+        recs = []
+        for nm in args.collide:
+            k = names.get(nm)
+            ps = pts.get(k, []) if k is not None else []
+            if len(ps) < 8:
+                print("gltf2mxm: collide %s: no joint, or too few vertices" % nm)
+                continue
+            n = len(ps)
+            mean = [sum(p[c] for p in ps) / n for c in range(3)]
+            cov = [[sum((p[r] - mean[r]) * (p[c] - mean[c]) for p in ps) / n for c in range(3)]
+                   for r in range(3)]
+            # the axis: the points' main direction, or towards a capsule joint below
+            # (the bone): whichever fits closer (the smaller radius; the bone up to
+            # 15% wider)
+            axes = []
+            ax = [1.0, 1.0, 1.0]
+            for _ in range(50):
+                ax = normalize([sum(cov[r][c] * ax[c] for c in range(3)) for r in range(3)])
+            axes.append((ax, None))
+            hd = [rest_world[joints[k]][r][3] for r in range(3)]
+            for c in sc.nodes[joints[k]].get("children", []):
+                if sc.nodes[c].get("name", "") in coll:
+                    tl = [rest_world[c][r][3] for r in range(3)]
+                    axes.append((normalize([tl[r] - hd[r] for r in range(3)]), (hd, tl)))
+
+            def fit(axis, bone):
+                # the extent: the bone's (head to the joint below), else the points'
+                if bone:
+                    t0, t1 = sorted(sum((q[c] - mean[c]) * axis[c] for c in range(3))
+                                    for q in bone)
+                else:
+                    ts = sorted(sum((p[c] - mean[c]) * axis[c] for c in range(3)) for p in ps)
+                    t0, t1 = ts[int(n * 0.05)], ts[int(n * 0.95)]
+                ds = []
+                for p in ps:
+                    t = min(max(sum((p[c] - mean[c]) * axis[c] for c in range(3)), t0), t1)
+                    ds.append(math.sqrt(sum((p[c] - mean[c] - axis[c] * t) ** 2
+                                            for c in range(3))))
+                ds.sort()
+                return ds[int(n * 0.8)], t0, t1, axis
+            # the bone, unless the main direction fits clearly closer
+            fits = [fit(ax, bone) for ax, bone in axes]
+            r, t0, t1, axis = min(fits, key=lambda f: f[0] * (1.0 if f is fits[0] else 1 / 1.15))
+            # the caps are part of the length
+            t0, t1 = (t0 + r, t1 - r) if t1 - t0 > 2 * r else ((t0 + t1) / 2,) * 2
+            a = [mean[c] + axis[c] * t0 for c in range(3)]
+            b = [mean[c] + axis[c] * t1 for c in range(3)]
+            recs.append(struct.pack("<HHf6f", k, 0, r, *a, *b))
+            if args.verbose:
+                print("gltf2mxm: collide %-12s r %.3f length %.3f (%d vertices)" %
+                      (nm, r, t1 - t0, n))
+        S["COLL"] = bytearray(struct.pack("<4I", len(recs), 0, 0, 0)) + b"".join(recs)
+        print("gltf2mxm: %d capsules" % len(recs))
+
+    # ---- the layout: the sections of the other one left out
+    ncluster, nvert, nstrip_vert, nstrip = len(clusters), stream_n[0] + 4, sn, len(strip_recs)
+    if args.layout == "strips":
+        for k in ("POS", "NRM", "UV", "RPOS", "RNRM", "JNT", "WGT", "IDX", "CLUSTER"):
+            S[k] = bytearray()
+        ncluster = nvert = 0
+    elif args.layout == "indexed":
+        for k in ("SPOS", "SNRM", "SUV", "SRPOS", "SRNRM", "SJNT", "SWGT", "STRIP"):
+            S[k] = bytearray()
+        nstrip_vert = nstrip = 0
+
     # ---- the file
     out = bytearray(HEADER_BYTES)
     offs = [0] * NSEC
@@ -783,9 +984,9 @@ def main():
         offs[i] = len(out)
         out += S[k]
     out += bytes((-len(out)) % 64)
-    nstrip_vert = sn
-    hdr = struct.pack("<16I4f", MAGIC, len(out), SKINNED if skin else 0, stream_n[0] + 4,
-                      len(clusters), ntri, nstrip_vert, len(strip_recs),
+    flags = (SKINNED if skin else 0) | (SINGLE if args.single else 0)
+    hdr = struct.pack("<16I4f", MAGIC, len(out), flags, nvert,
+                      ncluster, ntri, nstrip_vert, nstrip,
                       len(mat_ids), njoint, len(palettes), len(anims),
                       max_nv, max_ni, args.palette, len(S["TEX"]),
                       center[0], center[1], center[2], radius)
@@ -797,10 +998,14 @@ def main():
     uniq = sum(struct.unpack_from("<IHH", r)[1] for r in cluster_recs)
     print("gltf2mxm: %s: %d triangles, %d vertices (%d welded), %d clusters of <= %d vertices "
           "and %d indices: %d vertices, %d indices (%.2f per triangle; strips %d vertices), "
-          "%d materials, %d joints, %d palettes, %d animations, %d bytes" %
+          "%d materials, %d joints, %d palettes, %d animations, %s, %d bytes" %
           (os.path.basename(args.output), ntri, nin, len(verts), len(clusters), max_nv,
-           max_ni, uniq, nidx, nidx / ntri, nstrip_vert, len(mat_ids), njoint, len(palettes),
-           len(anims), len(out)))
+           max_ni, uniq, nidx, nidx / ntri, sn, len(mat_ids), njoint, len(palettes),
+           len(anims), args.layout, len(out)))
+    if args.verbose:
+        for i, k in enumerate(SECTIONS):
+            if S[k]:
+                print("gltf2mxm: %-8s %9d bytes" % (k, len(S[k])))
 
 
 if __name__ == "__main__":

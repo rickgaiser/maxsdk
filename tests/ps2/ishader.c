@@ -187,16 +187,32 @@ static void near_float(u32 i, const char *what, int k, u32 got, float want) {
               (s32)(g.f * 100000.0f), (s32)(want * 100000.0f));
 }
 
-/* The same expressions as demos/model/mskin.hlsl; the uniforms: mvp 0-3,
-   light 4, lcol 5, amb 6, the joints' columns from 7. */
+/* The same expressions as demos/model/mskin.hlsl; the uniforms in the places
+   of its header (mvp 0-3). */
+static float wrap(float nl) {
+  float h = nl * 0.5f + 0.5f;
+  return h * h;
+}
+static float spec(const float *n, const float *l, const float *e) {
+  float h[3] = {l[0] + e[0], l[1] + e[1], l[2] + e[2]};
+  float s = fmaxf_((n[0] * h[0] + n[1] * h[1] + n[2] * h[2]) *
+                       rsqrtf_(h[0] * h[0] + h[1] * h[1] + h[2] * h[2] + 1e-12f),
+                   0);
+  s = s * s;
+  s = s * s;
+  s = s * s;
+  return s * s;
+}
 static void ref_skin(u32 n) {
+  const float *light = uni[VU_MSKIN_LIGHT], *lcol = uni[VU_MSKIN_LCOL], *amb = uni[VU_MSKIN_AMB];
+  const float *eye = uni[VU_MSKIN_EYE];
   for (u32 i = 0; i < n; i++) {
     float c[4][4] = {{0}};
     for (int k = 0; k < 4; k++) {
       float w = (float)(s32)wgt[i][k] / 255.0f;
       for (int m = 0; m < 4; m++)
         for (int f = 0; f < 4; f++)
-          c[m][f] += uni[7 + 4 * jnt[i][k] + m][f] * w;
+          c[m][f] += uni[VU_MSKIN_JOINT + 4 * jnt[i][k] + m][f] * w;
     }
     float v[3] = {pos[i][0], pos[i][1], pos[i][2]}, mp[4], nv[3], p[4];
     for (int f = 0; f < 4; f++)
@@ -206,16 +222,22 @@ static void ref_skin(u32 n) {
     for (int f = 0; f < 4; f++)
       p[f] = uni[0][f] * mp[0] + uni[1][f] * mp[1] + uni[2][f] * mp[2] + uni[3][f];
     float q = 1.0f / p[3];
-    float nn = nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2];
-    float d = fmaxf_((nv[0] * uni[4][0] + nv[1] * uni[4][1] + nv[2] * uni[4][2]) *
-                         rsqrtf_(nn + 1e-6f),
-                     0);
+    float r = rsqrtf_(nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2] + 1e-6f);
+    for (int f = 0; f < 3; f++)
+      nv[f] *= r;
+    float d = wrap(nv[0] * light[0] + nv[1] * light[1] + nv[2] * light[2]);
+    float e[3] = {eye[0] - mp[0], eye[1] - mp[1], eye[2] - mp[2]};
+    float er = rsqrtf_(e[0] * e[0] + e[1] * e[1] + e[2] * e[2] + 1e-12f);
+    for (int f = 0; f < 3; f++)
+      e[f] *= er;
+    float s = eye[3] * spec(nv, light, e);
     u32(*o)[4] = &tab[1 + 3 * i];
     near_float(i, "st", 0, o[0][0], (float)uv[i][0] / 4096.0f * q);
     near_float(i, "st", 1, o[0][1], (float)uv[i][1] / 4096.0f * q);
     near_float(i, "st", 2, o[0][2], q);
-    for (int f = 0; f < 4; f++)
-      near_int(i, "rgbaq", f, o[1][f], (s32)fminf_(uni[6][f] + uni[5][f] * d, 255), 1);
+    for (int f = 0; f < 3; f++)
+      near_int(i, "rgbaq", f, o[1][f], (s32)fminf_(amb[f] + lcol[f] * d, 255), 1);
+    near_int(i, "rgbaq", 3, o[1][3], (s32)fminf_(s, 255), 1);
     for (int f = 0; f < 3; f++)
       near_int(i, "xyz2", f, o[2][f], (s32)(p[f] * q * 16.0f), 2);
   }
@@ -224,6 +246,8 @@ static void ref_skin(u32 n) {
 }
 
 /* ---- uniforms ------------------------------------------------------------------- */
+
+_Static_assert(VU_MLIT_EYE == VU_MTEX_EYE && VU_MLIT_EYE == VU_MSKIN_EYE, "");
 
 static void set_uniforms(float (*u)[4], const struct prog *p, float scale) {
   static const float m[4][4] = {
@@ -246,12 +270,17 @@ static void set_uniforms(float (*u)[4], const struct prog *p, float scale) {
       u[6][0] = u[6][1] = u[6][2] = 0.2f * scale, u[6][3] = 1;
     }
   }
+  if (p->lit && p->model) {
+    /* the eye (in front, where the highlights are) and the highlight's strength */
+    u[VU_MLIT_EYE][0] = 0.5f, u[VU_MLIT_EYE][1] = -0.8f * scale, u[VU_MLIT_EYE][2] = -2;
+    u[VU_MLIT_EYE][3] = 200;
+  }
   if (p->model == 2)
     /* mskin: the joints, rotations and moves around 1 */
     for (int j = 0; j < NJOINT; j++)
       for (int c = 0; c < 4; c++)
         for (int f = 0; f < 4; f++)
-          u[7 + 4 * j + c][f] = f == 3 ? (c == 3 ? 1.0f : 0.0f)
+          u[VU_MSKIN_JOINT + 4 * j + c][f] = f == 3 ? (c == 3 ? 1.0f : 0.0f)
                                        : (c == f ? 1.0f : 0.0f) + 0.3f * rnd() * scale;
 }
 

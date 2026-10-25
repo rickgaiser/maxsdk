@@ -15,6 +15,9 @@
    before they are sent; 16-byte aligned, padded to 16), a triangle strip
    whose pieces are joined by repeated vertices. Strips: the same strips, the
    vertices written out (the S* streams), one run per material and palette.
+   A model may have only one of the two (gltf2mxm.py --layout): the other's
+   sections are left out and its counts (ncluster and nvert, or nstrip and
+   nsvert) are 0.
 
    A skinned model's animations are baked: for each frame, the matrix of
    every joint (its node's world matrix times its inverse bind matrix) as
@@ -24,13 +27,14 @@
 
 #include <mx/types.h>
 
-#define MXM_MAGIC 0x314D584Du /* "MXM1" */
+#define MXM_MAGIC 0x324D584Du /* "MXM2" */
 #define MXM_SKINNED 1u
+#define MXM_SINGLE 2u /* drawn once, not as copies (gltf2mxm.py --single) */
 
 enum {
   MXM_POS, MXM_NRM, MXM_UV, MXM_RPOS, MXM_RNRM, MXM_JNT, MXM_WGT, MXM_IDX, MXM_CLUSTER,
   MXM_SPOS, MXM_SNRM, MXM_SUV, MXM_SRPOS, MXM_SRNRM, MXM_SJNT, MXM_SWGT, MXM_STRIP,
-  MXM_MAT, MXM_TEX, MXM_PAL, MXM_ANIM,
+  MXM_MAT, MXM_TEX, MXM_PAL, MXM_ANIM, MXM_PHYS, MXM_COLL,
   MXM_NSEC = 24
 };
 
@@ -57,17 +61,26 @@ struct mxm_strip {
   u32 pad;
 };
 
+/* The texture: psm MXM_TEX_CT32, (1 << tw) x (1 << th) RGBA (alpha 128 =
+   1.0); or MXM_TEX_T8, as many bytes, each the number of an entry of the
+   CLUT at clut: 256 RGBA, already in the GS's order of a 16 x 16 CT32 CLUT
+   (CSM1: entries 8 .. 15 and 16 .. 23 of each 32 swapped). */
+#define MXM_TEX_CT32 0
+#define MXM_TEX_T8 1
+#define MXM_MAT_ALPHA 1 /* flags: texels not fully opaque (cut-outs, soft edges) */
 struct mxm_mat {
-  u32 tex;      /* byte offset in TEX: (1 << tw) x (1 << th) RGBA, alpha 128 = 1.0 */
-  u16 tw, th;
-  u8 color[4];  /* the texture's mean colour */
-  u32 pad;
+  u32 tex;      /* byte offset in TEX */
+  u8 tw, th;
+  u8 psm, flags;
+  u8 color[4];  /* the texture's mean colour; [3]: the highlight's strength (0..255) */
+  u32 clut;     /* byte offset in TEX (T8) */
 };
 
 #define MXM_PAL_MAX 30
 struct mxm_pal {
   u16 n;
-  u8 joint[MXM_PAL_MAX];
+  u16 joint[MXM_PAL_MAX];
+  u16 pad;
 };
 
 struct mxm_anim {
@@ -77,5 +90,34 @@ struct mxm_anim {
   u32 mat;      /* byte offset in ANIM: nframe * njoint matrices of 4 float4 columns */
   u32 pad;
 };
+
+/* PHYS: the joints moved by springs (gltf2mxm.py --phys), parents before
+   children: a u32 count (the section's first 16 bytes), the records, then the
+   u16 joint numbers of their descendants. The tip of each is pulled by a
+   spring towards where the animation puts it (stiff per second squared; damp
+   per second, of its speed relative to the animation's; plus gravity down,
+   model units per second squared), kept at its distance from the head,
+   within limit (radians) of the animation and out of the COLL capsules; the
+   joint and its descendants turn about the head to it. */
+struct mxm_phys {
+  u16 joint, ndesc;
+  u32 desc;             /* byte offset in PHYS of the ndesc descendants */
+  float head[4], tip[4]; /* in the rest pose (model space), w 1 */
+  float stiff, damp, gravity, limit;
+  float radius;         /* its thickness: kept that far out of the capsules */
+  u32 pad[3];
+};
+_Static_assert(sizeof(struct mxm_phys) == 72, "gltf2mxm.py writes 72 bytes");
+
+/* COLL: capsules on body joints (gltf2mxm.py --collide) that the spring
+   joints stay out of: a u32 count (the first 16 bytes), then the records.
+   The segment a .. b is in the rest pose (model space) and moves with the
+   joint. */
+struct mxm_coll {
+  u16 joint, pad;
+  float radius;
+  float a[3], b[3];
+};
+_Static_assert(sizeof(struct mxm_coll) == 32, "gltf2mxm.py writes 32 bytes");
 
 #endif
