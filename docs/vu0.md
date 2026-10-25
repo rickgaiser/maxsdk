@@ -39,6 +39,8 @@
 | Double-buffered `mx_vuq` (ITOP + xitop ping-pong, next batch held at a VIF i-bit until the previous one is read, mapped readback) | correct; 74.4 cycles/qw vs 44.7 single-buffered (doubling kernel, batches of 60): the per-batch interrupt, the hold and the mapped reads cost more than the overlap gains | `probe/p4_vu.c` | 2026-10-23 |
 | VIF0 ITOP read by VU0 with `xitop`, MPG upload to VU0 through VIF0 | work | `tests/ps2/vu.c` | 2026-10-23 |
 | The assembler rejects `lqc2`/`sqc2`/`vcallms`/`cfc2.i` without `-mvu0`; they are encoded as `.word` (vcallms 0x4a000038, cfc2.i 0x4848e801) | | `bench/vudemo/vu.h` | 2026-10-23 |
+| **`ctc2` CMSAR0 directly followed by `vcallmsr` starts at the previous CMSAR0** (0 of 4). Two VNOPs between (VU User's Manual 5.4.6) or `sync.p` work 4 of 4; `ctc2.i` does not help; `vcallms imm` works. **`mx_vu0_call(addr != 0)` has this bug (not fixed)**; latent while every kernel's entry is 0 (`vcallms 0` path) | `vcallms imm` 13 vs VNOP form 19 cycles start to end of a short program | vustate.c (in `maxsdk_vu_work_2026-10-24/`) | 2026-10-24 |
+| VU states (Ready / Run / Stop), ForceBreak, resume, reset: see [vu1.md](vu1.md#vu-states-vu0-and-vu1-ps2-2026-10-24) | | | 2026-10-24 |
 
 ### Micro-mode instruction timing (PS2, 2026-10-24, `bench/vuuarch`)
 

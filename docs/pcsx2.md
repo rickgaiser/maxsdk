@@ -17,6 +17,11 @@ Correctness notes only. PCSX2 (flatpak 2.5.x) timings are never performance data
 | VIF0 chain with tags written uncached (isolated probe) | starts, data ok | starts, data ok | maxsdk `probe/p2_dma.c` |
 | Reading VU memory while the VU runs | wrong data | correct data | maxsdk `tests/ps2/vu.c` |
 | VU1 D bit with FBRST.DE1 | hangs the PS2 | ignored | maxsdk `tests/ps2/dbit.c` |
+| FBRST ForceBreak (VFS) | stops the VU in 36 cycles | ignored; a VCALLMS to the still running VU0 then freezes PCSX2 (kill it with `pkill -9 -f '^pcsx2-qt'`) | maxsdk vustate.c (2026-10-24, in `maxsdk_vu_work_2026-10-24/`) |
+| VU1 running a spin loop / stopped by a T bit | VBS1 / VTS1 set | neither shows in VPU-STAT | maxsdk vustate.c (`maxsdk_vu_work_2026-10-24/`) |
+| VIF1 FLUSHE behind a T-stopped VU1 | waits until a reset or resume | passes, MARK set | maxsdk vustop.c (`maxsdk_vu_work_2026-10-24/`) |
+| CTC2 CMSAR0 directly followed by VCALLMSR | starts at the previous CMSAR0 | starts at the new one | maxsdk vustate.c (`maxsdk_vu_work_2026-10-24/`) |
+| D bit on VU0, VU0 watchdog | hangs the PS2; no watchdog in 5 s | ignored; no watchdog | maxsdk vudbit.c, vustate.c (`maxsdk_vu_work_2026-10-24/`) |
 | spin demo, 120 frames | 146 vsyncs | 119 vsyncs | maxsdk `demos/spin/spin.c` |
 | A second SIGNAL before CSR.SIGNAL is cleared (GS interrupts masked) | the same: the GS stops until CSR.SIGNAL is written | the GS stops at the second SIGNAL (SIGID 0x11, the LABEL after it not yet set) and goes on once CSR.SIGNAL is written | maxsdk `probe/p5_fast.c` |
 | Stall control, normal-mode VIF1 drain (`probe/p5_fast.c` stall_normal) | the drain waits; data correct | the drain does not wait: 28 of 28 words wrong | maxsdk `probe/p5_fast.c` |
