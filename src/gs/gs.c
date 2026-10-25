@@ -17,6 +17,32 @@ static void show(u32 frame) {
   MX_R64(MX_GS_DISPFB2) = MX_SET(GS_DISPFB2_FBP, mx_gs.fbp[buf]) |
                           MX_SET(GS_DISPFB2_FBW, mx_gs.fbw) |
                           MX_SET(GS_DISPFB2_PSM, MX_GS_PSM_CT32);
+  if (mx_gs.smooth)
+    MX_R64(MX_GS_DISPFB1) = MX_SET(GS_DISPFB1_FBP, mx_gs.fbp[buf]) |
+                            MX_SET(GS_DISPFB1_FBW, mx_gs.fbw) |
+                            MX_SET(GS_DISPFB1_PSM, MX_GS_PSM_CT32);
+}
+
+/* DISPLAY of a read circuit: the picture from VCK dx (4 VCK a pixel at 640) */
+static u64 display(u32 dx) {
+  u32 w = mx_gs.w, h = mx_gs.h, full = h > 256;
+  return MX_SET(GS_DISPLAY2_DX, dx) | MX_SET(GS_DISPLAY2_DY, 50) |
+         MX_SET(GS_DISPLAY2_MAGH, (2560 + w - 1) / w - 1) | MX_SET(GS_DISPLAY2_DW, 0x9FF) |
+         MX_SET(GS_DISPLAY2_DH, (full ? h : h << 1) - 1);
+}
+#define DX 0x27C
+
+void mx_gs_smooth(int on) {
+  /* circuit 1 half a pixel to the right: half of MAGH + 1 VCK */
+  u32 half = (2560 + mx_gs.w - 1) / mx_gs.w / 2;
+  mx_gs.smooth = on;
+  MX_R64(MX_GS_DISPLAY1) = display(DX + half);
+  show(mx_gs.shown ? mx_gs.shown - 1 : 0);
+  /* both circuits, blended by ALP (0x80: 1:1), or circuit 2 only */
+  MX_R64(MX_GS_PMODE) = on ? MX_SET(GS_PMODE_EN1, 1) | MX_SET(GS_PMODE_EN2, 1) |
+                                 MX_SET(GS_PMODE_CRTMD, 1) | MX_SET(GS_PMODE_MMOD, 1) |
+                                 MX_SET(GS_PMODE_ALP, 0x80)
+                           : 0x66;
 }
 
 static void gs_irq(void *arg) {
@@ -70,6 +96,7 @@ void mx_gs_init(u32 w, u32 h) {
   mx_gs.tbp = 3 * pages * 32;
   mx_gs.frames = mx_gs.frames_done = mx_gs.shown = 0;
   mx_gs.missed = mx_gs.starved = mx_gs.counting = mx_gs.immediate = mx_gs.first = 0;
+  mx_gs.smooth = 0;
 
   mx_dma_init();
   MX_R32(MX_GIF_CTRL) = (u32)MX_BIT(GIF_CTRL_RST);
@@ -85,9 +112,7 @@ void mx_gs_init(u32 w, u32 h) {
   MX_R64(MX_GS_PMODE) = 0x66;
   MX_R64(MX_GS_SMODE2) = MX_SET(GS_SMODE2_INT, 1) | MX_SET(GS_SMODE2_FFMD, !full);
   show(0);
-  MX_R64(MX_GS_DISPLAY2) = MX_SET(GS_DISPLAY2_DX, 0x27C) | MX_SET(GS_DISPLAY2_DY, 50) |
-                           MX_SET(GS_DISPLAY2_MAGH, (2560 + w - 1) / w - 1) |
-                           MX_SET(GS_DISPLAY2_DW, 0x9FF) | MX_SET(GS_DISPLAY2_DH, (full ? h : h << 1) - 1);
+  MX_R64(MX_GS_DISPLAY2) = display(DX);
   MX_R64(MX_GS_BGCOLOR) = 0;
 
   CSR = MX_BIT(GS_CSR_SIGNAL) | MX_BIT(GS_CSR_FINISH);

@@ -32,6 +32,7 @@ struct mx_gs {
   volatile u32 finish_at; /* mx_count() at the last FINISH */
   volatile u32 slack;     /* EE cycles from the FINISH of the frame shown last to its vblank:
                              how early it was ready (vsync on) */
+  volatile int smooth;    /* the display filter (mx_gs_smooth) */
 };
 
 extern struct mx_gs mx_gs;
@@ -48,6 +49,12 @@ MX_INLINE u32 mx_gs_py(u32 y) { return ((2048 - mx_gs.h / 2) + y) << 4; }
    32-bit color, 24-bit Z, two framebuffers. Installs the GS and vblank
    interrupt handlers. */
 void mx_gs_init(u32 w, u32 h);
+
+/* The display filter, on or off: both read circuits show the frame, the
+   first half a pixel to the right, blended 1:1 by the PCRTC. It smooths the
+   edges across at no drawing cost, every line its own (the picture is a
+   little softer across). Only the display: not GS memory (screenshots). */
+void mx_gs_smooth(int on);
 
 /* Append A+D writes that set up drawing into framebuffer buf (0/1): FRAME,
    ZBUF, XYOFFSET, SCISSOR, TEST, PRMODECONT, COLCLAMP, DTHE. 9 quadwords. */
