@@ -10,6 +10,7 @@
 #define PAD_SID 0x8000010F
 #define PAD_SID2 0x8000011F
 #define PAD_CMD_OPEN 0x80000100
+#define PAD_CMD_SET_MAIN_MODE 0x80000105 /* port, slot, mode (1: analog), lock (3) */
 
 #define PAD_STATE_STABLE 6
 #define PAD_STATE_FINDCTP1 2
@@ -29,6 +30,7 @@ static s32 cmd[32] MX_ALIGNED(64);
 static s32 res[32] MX_ALIGNED(64);
 static int ready;
 static u32 prev[2];
+static u32 analog_polls[2];
 
 int mx_pad_init(void) {
   if (ready)
@@ -84,12 +86,27 @@ u32 mx_pad_buttons(int port) {
   return ~(u32)(n->data[2] | n->data[3] << 8) & 0xFFFF;
 }
 
+/* A DualShock starts digital: once it is stable, ask for analog mode,
+   locked (the ANALOG button does not switch it back); again every 128 polls
+   while it is digital (a pad without analog mode says no). */
+static void want_analog(int port, volatile struct pad_record *n) {
+  if (n->state != PAD_STATE_STABLE || (n->data[1] >> 4) == 7 || analog_polls[port]++ % 128)
+    return;
+  cmd[0] = PAD_CMD_SET_MAIN_MODE;
+  cmd[1] = port;
+  cmd[2] = 0; /* slot */
+  cmd[3] = 1;
+  cmd[4] = 3;
+  mx_sif_call(&pad, 1, cmd, sizeof cmd, (void *)MX_UNCACHED(res), sizeof res);
+}
+
 int mx_pad_sticks(int port, u8 st[4]) {
   for (int i = 0; i < 4; i++)
     st[i] = 128;
   if (!mx_pad_connected(port))
     return 0;
   volatile struct pad_record *n = newest(port);
+  want_analog(port, n);
   /* data[1]: the type in the high nibble (7: analog) and the halfwords of
      data after it in the low one; the sticks are data[4..7] */
   if ((n->data[1] >> 4) != 7 || (n->data[1] & 15) < 3 || n->length < 8)

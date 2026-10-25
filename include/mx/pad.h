@@ -33,10 +33,11 @@ int mx_pad_connected(int port);
 u32 mx_pad_buttons(int port);
 /* Buttons pressed since the previous call for this port. */
 u32 mx_pad_pressed(int port);
-/* The sticks of port (0/1) when the pad is in analog mode (DualShock: the
-   ANALOG button): st[0..3] = right x, right y, left x, left y, 0 .. 255 with
-   the middle at 128 (y grows downwards). Returns 1, or 0 with 128s when the
-   pad is digital or not connected. */
+/* The sticks of port (0/1) when the pad is in analog mode: st[0..3] = right
+   x, right y, left x, left y, 0 .. 255 with the middle at 128 (y grows
+   downwards). Returns 1, or 0 with 128s when the pad is digital or not
+   connected. A DualShock is put into analog mode (locked) by the first calls
+   after it is connected. */
 int mx_pad_sticks(int port, u8 st[4]);
 
 #endif
