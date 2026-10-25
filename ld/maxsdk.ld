@@ -9,8 +9,10 @@ PHDRS {
 
 SECTIONS {
   .text 0x00100000 : {
+    __text_start = .;
     KEEP(*(.text.start))
     *(.text .text.*)
+    __text_end = .;
   } :text
 
   /* VU microcode, kept 16-byte aligned so it can be sent with MPG. */

@@ -15,8 +15,15 @@ make gen             # regenerate include/mx/hw/*.h, include/mx/bios.h, src/base
 
 VU programs are HLSL (`demos/*/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
 
-Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with
-`ps2client -h 192.168.1.10 execee host:<elf>`. Every test ends with `@@PS2TEST_END@@ status=N`.
+Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with the `ps2-hw-test` skill
+(it takes the PS2 lock and waits for the restart after the run). Every test ends with
+`@@PS2TEST_END@@ status=N`.
+A CPU exception ends the program with a report (registers, FPU, stack) and status 255;
+`tools/symbolize.py <elf> <log>` turns its `trace:` line into a backtrace with functions and
+source lines (build with `EXTRA_CFLAGS=-g` for the lines). Without frame pointers, the frames
+after `ra` are return addresses found on the stack by a heuristic, so one can be stale.
+`tests/ps2/crash.c` crashes on purpose to show it, so it always ends with status 255: scripts
+that run every test and expect status 0 must skip it.
 `make batch` builds `batch/ps2batch.elf`: all PS2 tests, the phase 2–5 probes and the demos
 (spin, scene, allunits) in one ELF, so one PS2 run covers them.
 

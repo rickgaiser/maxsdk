@@ -21,8 +21,11 @@ void mx_debug_flush(void);
 void mx_debug_write(const char *s, u32 n);
 
 /* Report CPU exceptions (address and bus errors, TLB misses, reserved
-   instructions, ...) on the debug output with the registers, then exit with
-   status 255. The startup installs it before main. */
+   instructions, ...) on the debug output with the registers, HI/LO, the FPU,
+   the top of the stack and a "trace:" line (EPC, ra and the likely return
+   addresses on the stack), then exit with status 255. tools/symbolize.py
+   turns the trace into functions and source lines. The startup installs it
+   before main. */
 void mx_exception_init(void);
 
 int mx_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
