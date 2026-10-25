@@ -54,6 +54,17 @@ static void hud_text(u32 x, u32 y, const char *s) {
     n++;
   if (!n)
     return;
+  /* at most 48 characters a packet: a reservation must fit half of the
+     frame's scratchpad buffer (mx_frame_reserve) */
+  if (n > 48) {
+    char part[49];
+    for (u32 i = 0; i < 48; i++)
+      part[i] = s[i];
+    part[48] = 0;
+    hud_text(x, y, part);
+    hud_text(x + 48 * 6, y, s + 48);
+    return;
+  }
   u64 *c = mx_frame_direct(6 + 4 * n);
   c = mx_e_ad_tag(c, 4, 1);
   c = mx_e_ad(c, MX_GS_REG_TEX0_1, mx_gs_tex0(hud_tbp, 4, MX_GS_PSM_CT32, 8, 3, 1, 0));
