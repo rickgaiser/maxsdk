@@ -18,7 +18,7 @@ cbuffer Uniforms {
 struct In {
     float3 pos : POSITION;
     int4 nrm : NORMAL_V4_8;
-    int2 uv : TEXCOORD_V2_16;
+    int3 uv : TEXCOORD_V2_16_F4096; // z = 4096 (1.0) from the VIF: (s q, t q, q)
 };
 
 struct Out {
@@ -36,7 +36,7 @@ Out mscei(In v) {
     float3 c = max(a[0].xyz * n.x + a[1].xyz * n.y + a[2].xyz * n.z, (float3)0);
     float3 l = min(e[0].xyz * c.x + e[1].xyz * c.y + e[2].xyz * c.z + amb.xyz, (float3)255);
     Out o;
-    o.st = float4(vu::itof12(v.uv) * q, q, 0);
+    o.st = float4(vu::itof12(v.uv) * q, 0);
     o.rgbaq = vu::rgba8(float4(l, amb.w));
     {
         // t first, as msceic (which clips t): the same picture

@@ -116,7 +116,8 @@ struct mx_shader_in {
   u8 usn;   /* zero-extend */
   u8 bytes; /* per vertex in memory */
   u32 mask; /* STMASK for the UNPACK, 0: none (fields 1.0 from COL: a float3
-               input from V2-32 is (x, y, 1)) */
+               input from V2-32 is (x, y, 1); values from ROW: an int3 input
+               TEXCOORD_V2_16_F4096 is (s, t, 4096)) */
 };
 #define MX_SHADER_MAX_IN 8
 struct mx_shader {
@@ -137,6 +138,7 @@ struct mx_shader {
   u64 regs;    /* GIF register list */
   u32 nin;
   struct mx_shader_in in[MX_SHADER_MAX_IN];
+  u32 row[4];   /* ROW for the fields that the masked UNPACKs take from it */
   u32 in_at;    /* the first input in a buffer */
   u32 out_at;   /* the GIF packet: in a buffer; indexed, in data memory */
   /* indexed programs (max_i != 0): MX_VU_ISHADER */
@@ -163,6 +165,7 @@ struct mx_shader {
                       .regs = VU_##NAME##_REGS,                                                    \
                       .nin = VU_##NAME##_NIN,                                                      \
                       .in = VU_##NAME##_INPUTS,                                                    \
+                      .row = VU_##NAME##_ROW,                                                      \
                       .in_at = VU_##NAME##_IN_AT,                                                  \
                       .out_at = VU_##NAME##_OUT_AT})
 
@@ -185,6 +188,7 @@ struct mx_shader {
                       .regs = VU_##NAME##_REGS,                                                    \
                       .nin = VU_##NAME##_NIN,                                                      \
                       .in = VU_##NAME##_INPUTS,                                                    \
+                      .row = VU_##NAME##_ROW,                                                      \
                       .in_at = VU_##NAME##_IN_AT,                                                  \
                       .out_at = VU_##NAME##_OUT_AT,                                                \
                       .max_i = VU_##NAME##_MAX_I,                                                  \
@@ -200,8 +204,16 @@ MX_INLINE u32 mx_shader_masks(const struct mx_shader *s) {
     k += s->in[i].mask != 0;
   return k;
 }
+/* Inputs with fields from ROW (STMASK 01). */
+MX_INLINE u32 mx_shader_rows(const struct mx_shader *s) {
+  u32 k = 0;
+  for (u32 i = 0; i < s->nin; i++)
+    k += (s->in[i].mask & 0x55555555u) != 0;
+  return k;
+}
 MX_INLINE u32 mx_shader_context_qw(const struct mx_shader *s) {
-  return (s->nctx == 1 ? 3 : 2) + s->ctx_qw + (mx_shader_masks(s) ? 2 : 0);
+  return (s->nctx == 1 ? 3 : 2) + s->ctx_qw + (mx_shader_masks(s) ? 2 : 0) +
+         (mx_shader_rows(s) ? 2 : 0);
 }
 MX_INLINE u32 mx_shader_batch_qw(const struct mx_shader *s) {
   return 3 + s->nin + mx_shader_masks(s);

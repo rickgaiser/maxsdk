@@ -29,6 +29,9 @@ int4 ftoi15(float4 v) { return int4(v * 32768.0); }
 float4 itof4(int4 v) { return float4(v) * (1.0 / 16.0); }
 float4 itof12(int4 v) { return float4(v) * (1.0 / 4096.0); }
 float4 itof15(int4 v) { return float4(v) * (1.0 / 32768.0); }
+float3 itof4(int3 v) { return float3(v) * (1.0 / 16.0); }
+float3 itof12(int3 v) { return float3(v) * (1.0 / 4096.0); }
+float3 itof15(int3 v) { return float3(v) * (1.0 / 32768.0); }
 float2 itof12(int2 v) { return float2(v) * (1.0 / 4096.0); }
 // A value that the GIF reads by its low bits (RGBAQ: 8 bits), rounded to an
 // integer, for |v| < 2^22: v + 1.5 * 2^23 has round(v) in the low bits of

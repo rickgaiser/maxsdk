@@ -43,6 +43,7 @@ Out lvl2(In v) { ... }
 |---|---|
 | UNPACK format of an input | a semantic suffix: `_S_32 _V2_16 _V3_8 _V4_8U _V4_5 ...` (`U`: zero-extended); none: `float`/`float2..4` → S/V2/V3/V4-32 |
 | Fields of 1.0 in an input | a float vector with more fields than its 32-bit format: the VIF fills the others with 1.0 (STMASK, COL; the header's `INPUTS`): `float3 st : TEXCOORD_V2_32` is (s, t, 1), and `float4(v.st * q, 0)` for GIF_ST is one MULq. The masked UNPACK costs the VIF time: worth it when VU1 is the limit (vumax S5, S6), not when the VIF is (S3) |
+| Field values in an integer input | `_F<n>` after the format: an integer vector with more fields than its format gets n in the others, from ROW (STMASK 01; the header's `ROW`, which `mx_shader_e_context` sends with STROW). `int3 uv : TEXCOORD_V2_16_F4096` is (s, t, 4096), and `float4(vu::itof12(v.uv) * q, 0)` for GIF_ST is ITOF12 and MULq, without the ADDQ of q (mscei 21 → 20 cycles a vertex indexed, msceic 22 → 21, mskin 88 → 86). A field has one value for all inputs of a program |
 | Fields the GIF does not read | w of GIF_ST, z and w of GIF_UV, x, y and z of GIF_FOG (PACKED mode, float outputs): undefined, nothing computes them |
 | GIF register of an output | the semantic `GIF_RGBAQ GIF_ST GIF_UV GIF_XYZ2 GIF_XYZF2 GIF_FOG GIF_XYZ3 GIF_XYZF3`; two outputs to one register: `GIF_XYZF2_A`, `GIF_XYZF2_B` |
 | Skip a vertex (ADC) | bit 15 of XYZ2/XYZF2.w: add 2048 before `vu::ftoi4` (`demos/procgen/lvl3.hlsl`), or `o.xyz2.w = vu::adc(c)` for a 0/1 `c` |

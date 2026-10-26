@@ -210,6 +210,11 @@ u64 *mx_shader_e_context(u64 *c, const struct mx_shader *s, u32 ctx, u32 prim, c
     c = mx_e_cnt(c, 1, 0, mx_vif_stcol());
     c = mx_e_w4(c, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
   }
+  /* the values that they take from ROW (the header's ROW) */
+  if (mx_shader_rows(s)) {
+    c = mx_e_cnt(c, 1, 0, mx_vif_strow());
+    c = mx_e_w4(c, s->row[0], s->row[1], s->row[2], s->row[3]);
+  }
   /* the program's init (at the first batch) and each batch read it at ITOP */
   return mx_e_cnt(c, 0, 0, mx_vif_itop(ctx));
 }

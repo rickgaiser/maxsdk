@@ -17,7 +17,7 @@ cbuffer Uniforms {
 struct In {
     float3 pos : POSITION;
     int4 nrm : NORMAL_V4_8;
-    int2 uv : TEXCOORD_V2_16;
+    int3 uv : TEXCOORD_V2_16_F4096; // z = 4096 (1.0) from the VIF: (s q, t q, q)
 };
 
 struct Out {
@@ -37,7 +37,7 @@ Out msceic(In v) {
     // the triangle that ends here has a vertex beyond the guard band
     vu::clip(t, prm.w);
     Out o;
-    o.st = float4(vu::itof12(v.uv) * q, q, 0);
+    o.st = float4(vu::itof12(v.uv) * q, 0);
     o.rgbaq = vu::rgba8(float4(l, amb.w));
     {
         // t first, as mscei: the same picture

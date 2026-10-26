@@ -21,9 +21,13 @@ then to VU0 micro mode (HLSL compute). Toolchain: the feature tree (`r5900-featu
 | 13 | Mips `-mvu0` (MachinePipeliner) | **wrong code** | the EE skinning loop of one joint without normals, software pipelined, writes wrong positions (2084 of 99,673 vertices) | not the compiler: PCSX2's EE recompiler. With the EE interpreter (`EnableEE = false`) the same ELF gives 0 differences; the trigger is MipsR5900Issue's order of the kernel (`pextlh $14, ...` right after `qmtc2 $14, $vf15` after a VMADDA), which is equivalent in program order. Confirmed on the PS2 (2026-10-26): `m13_p.elf` gives `micro normals 0 vs 1: 0 positions differ` |
 | 14 | clang | pragma lost | `#pragma clang loop unroll_count(2) pipeline(disable)` drops the `pipeline(disable)` (also as two pragmas) | fixed (f6def3308e3b): `pipeline.disable` is in the unrolled loop's `followup_all` |
 | 15 | Mips `-mvu0` | slow code | `127 / sqrt(dot)` of a VU0 vector goes out to the FPU and back (QMFC2, MTC1, SQRT.S, DIV.S, MFC1, QMTC2): ~3 of 16 ms of EE skinning a frame | fixed with afn (cdd3e5c6f6b0); the model Makefile now builds model.c with `-mvu0 -fapprox-func` |
-| 16 | Mips `-mvu0` (asm) | missing instructions | `vcallms`, `vcallmsr`, and `cfc2`/`ctc2` with VU0 control or VI registers are not accepted; micro mode needs them for every call (`.word` for now) | open (2026-10-26) |
-| 17 | clang `-mvu0` | missing feature | no way to keep VF registers reserved across asm statements (`-ffixed-vfN` or a register variable): a register-fed VU0 micro program's inputs and results stay in vf1..vf12 between the calls | open (2026-10-26) |
-| 18 | Mips R5900 (MMI) | slow code | four bytes zero-extended to words: the halfword step goes through the stack (SQ, 4 LHU + 8 SH, LQ) instead of `PEXTLH rd, $zero, rs` | open (2026-10-26) |
+| 16 | Mips `-mvu0` (asm) | missing instructions | `vcallms`, `vcallmsr`, and `cfc2`/`ctc2` with VU0 control or VI registers are not accepted; micro mode needs them for every call (`.word` for now) | fixed (16d6b0e05b1e): VCALLMS (byte address, multiple of 8, below 2^18) and VCALLMSR; `$vi0`..`$vi31` are accepted as COP2 control registers by CFC2/CTC2 (.i too). Same encodings as binutils (cfc2.i $8, $vi29 = 0x4848e801) |
+| 17 | clang `-mvu0` | missing feature | no way to keep VF registers reserved across asm statements (`-ffixed-vfN` or a register variable): a register-fed VU0 micro program's inputs and results stay in vf1..vf12 between the calls | fixed (755d1464feb7): `-ffixed-vf1` .. `-ffixed-vf31` (target feature `+reserve-vfN`): the registers are not allocated, and the VF pressure limit of the schedulers counts them out |
+| 18 | Mips R5900 (MMI) | slow code | four bytes zero-extended to words: the halfword step goes through the stack (SQ, 4 LHU + 8 SH, LQ) instead of `PEXTLH rd, $zero, rs` | fixed (98a841aff50e): the R5900 shuffle lowering takes the zeros of a splat from any element and tries the commuted mask: PEXTLB + PEXTLH with $zero |
+| 19 | VU (HLSL) | slow code | `docs/llvm-issues/mscei-not-pipelined.hlsl`: mscei with the screen scale and offset in the MVP (two upper ops fewer) is not software pipelined: 32 cycles a vertex instead of 19 (mscei: 21) | fixed (b542386063ac): the loop was pipelined (II 20), by a kernel unrolled 5 times (100 cycles a 5 vertices); 32 cycles was the loop for the remaining vertices. Two causes: an insertion of x into w (MR32.w, a lower instruction) counted as an upper one (VUBalancePipes makes it an INSERT_ROT in every block: II 19), and modulo variable expansion unrolls for the output pointer of the last stage, not just for the copies (the copies are now kept when they leave a quarter of the lower slots free). Now 19 cycles, no unrolling; mscei 21 (24 → 21 words), mtex 48.4 → 44, tf1 25 → 23, floor 21 → 20; water 95 → 96 |
+| 20 | VU (HLSL) | cannot select | `docs/llvm-issues/mscei-adc-lane.hlsl`: an output's int lane from an input's lane (`o.xyz2.w = v.nrm.w`): `Cannot select: v4f32 = bitcast (v8i16 BUILD_VECTOR ...)` | fixed (b542386063ac): an integer shuffle whose fields stay in place is a MERGE (MOVE<mask>, exact): `move.w` from the input, 17 cycles |
+| 21 | VU (HLSL) | missing feature | fields of a constant in an *integer* input (`int3 uv : TEXCOORD_V2_16` with z = 4096): only float inputs of 32-bit formats get fields of 1.0. mscei's GIF_ST needs an ADDQ for its q without it, or 8-byte texture coordinates | fixed (b542386063ac): `_F<n>` after the format of an integer input (`int3 uv : TEXCOORD_V2_16_F4096`): the VIF sets the other fields from ROW (STMASK 01), the header's `ROW` gives the values and `mx_shader_e_context` sends them (STROW). Also fixed on the way: an int3 widened to int4 crashed type legalization (v6i32). mscei/msceic/mskin use it: mscei_ix 21 → 20, msceic 22 → 21, mskin 88 → 86 cycles a vertex (issue 21's shader: 18); mtex stays on int2 (48 instead of 44 with it: the loop's registers after allocation) |
+| 22 | VU (HLSL) | slow code | the strip programs' input and output buffers are apart (MSCEI_MAX_N 81): ~100 cycles of each batch are prologue, epilogue and the two vertices repeated from the batch before (~6 % of mscei at 81 vertices) | dropped (2026-10-26, agreed with the user): with the outputs over the inputs, VIF1 unpacks batch k + 2 into the buffer whose GIF packet (batch k) the GIF may still read: TOPS swaps when batch k + 1 starts, not when the GIF is done (the same as the init MSCAL found on the PS2, `docs/vu1.md`). Safe forms cost more than the ~6 %: a FLUSH before each batch (no overlap of UNPACK and VU1), or one shared packet with an XGKICK wait at each batch start (the indexed layout; 4-6 % for the wait alone at the init) |
 
 Changes after the 22:00 build (feature tree, uncommitted): the narrowed ILW of mskin's joint
 indices kept no alias scopes (VUNarrowInt), which made a false 110-cycle recurrence; joint row
@@ -312,6 +316,55 @@ results), and micro mode fed by VIF0 DMA. All give the same results as macro mod
   zero-extended to words. PEXTLB with `$zero` is found for the bytes; the halfwords then go
   through the stack (SQ, LHU / SH, LQ) instead of `PEXTLH rd, $zero, rs`. The sign-extended
   form with the zeros below (model.c's normals) is fine.
+
+## 19-22. The strip mscei against ps2gl's SCEI (VCL)
+
+Found while looking at how the model demo's strips could be drawn faster at SCEI quality
+(2026-10-26, the `toolchain/build/llvm` build, clang af4807c366f1). Cycles a vertex of the
+steady-state loop (each loop is full: an upper op in every cycle, the delay slot included):
+
+| program | cycles | inputs | does |
+|---|---|---|---|
+| ps2gl `libs/ps2gl/vu1/scei.vcl` (VCL, `scei_vcl.vsm` MAIN_LOOP) | 19 | position, normal, stq: floats (q = 1) | transform, 3 lights, clipping (CLIPW), strip ADC from the input |
+| `demos/model/msceic.hlsl` | 22 | position V3-32, normal V4-8, uv V2-16 | the same, ADC from clipping only |
+| `demos/model/mscei.hlsl` | 21 | the same | no clipping |
+| mscei, scale and offset in the MVP (19) | 32, 19 forced | the same | |
+| mscei, + `float3 st : TEXCOORD_V2_32` (VIF fills q = 1.0) | 17 | uv 8 bytes | |
+| mscei, + the strip restart flag in the normal's w (`vu::adc`) | 17 | the same | ADC from the input (lower pipe: ILW.w, IAND, IADDIU, MFIR.w) |
+
+The compiler's schedule is as tight as VCL's: with the same inputs the loop has the same upper
+ops. The three cycles msceic has over VCL are the conversions of the packed inputs (ITOF0 of
+the normal, ITOF12 of the texture coordinates, ADDQ for GIF_ST's q). Wanted, so that mscei
+gets ps2gl's speed with the packed (smaller) inputs:
+
+- 19: `docs/llvm-issues/mscei-not-pipelined.hlsl` is mscei without `t * scl + prm` (the EE
+  puts the scale and offset in the MVP: one MULA and one MADD less). The pipeliner tries
+  II 19 and 20, finds no schedule and gives up: the loop is not pipelined, 32 cycles.
+  `llc --pipeliner-force-ii=21` pipelines it, and the loop is then 19 cycles (2 fewer than
+  mscei, as expected). `--pipeliner-ii-search-range=40` and `--pipeliner-max-stages=6` do not
+  help. Wanted: the search goes on to larger IIs (a loop that becomes 13 cycles slower for two
+  ops less makes the shaders' speed hard to predict).
+- 20: `docs/llvm-issues/mscei-adc-lane.hlsl`. `o.xyz2.w = v.nrm.w` (also
+  `int4(vu::ftoi4(...).xyz, v.nrm.w)`) stops llc: `Cannot select: v4f32 = bitcast (v8i16
+  BUILD_VECTOR ...)`. Expected: a MOVE.w in the lower pipe from the unpacked input (its w is the
+  sign-extended byte, so -128 sets bit 15, the ADC bit). `vu::adc(uint(v.nrm.w) & 1)` works,
+  with four lower ops instead of one.
+- 21: a field of a constant in an integer input. With `int3 uv : TEXCOORD_V2_16` and z = 4096
+  from the VIF (STMASK with ROW, or COL when no float input needs 1.0), `float4(vu::itof12(uv) *
+  q, 0)` would be ITOF12 + MULq, without the ADDQ: 18 cycles with 4-byte texture coordinates
+  (17 with `TEXCOORD_V2_32`, 8 bytes). Today only float inputs of 32-bit formats get fields of
+  1.0 (`docs/hlsl.md`).
+- 22: a strip batch has ~100 cycles outside the loop (the pipelined loop's prologue and
+  epilogue, the batch header and the kick) and repeats the last two vertices of the batch
+  before: at MSCEI_MAX_N 81 about 6 % of mscei's time. The input (3 QW a vertex) and output
+  (3 QW) buffers are apart; with the outputs written over the inputs (the same size here, and
+  each input is read before its output is stored), MAX_N would be ~160 and the share half.
+  Doable in the layout (VU_IN_AT = VU_OUT_AT + 1 when ITEM_QW = OUT_QW).
+
+Not compiler work, for the record: the demo's strips are short (they are cut inside the
+32-vertex clusters: 4.9 triangles a strip for Queen Marika, 1.81 strip vertices a triangle),
+and each join repeats two vertices; the ADC restart (20) instead of the repeats saves ~22 % of
+the vertices.
 
 ## Cost of V3-16 positions in the indexed programs (not a compiler bug)
 

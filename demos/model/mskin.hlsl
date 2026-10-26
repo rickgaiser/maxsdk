@@ -39,7 +39,7 @@ cbuffer Uniforms {
 struct In {
     int4 pos : POSITION_V3_16;
     int4 nrm : NORMAL_V4_8;
-    int2 uv : TEXCOORD_V2_16;
+    int3 uv : TEXCOORD_V2_16_F4096; // z = 4096 (1.0) from the VIF: (s q, t q, q)
     uint4 jnt : JOINTS_V4_8U;
     uint4 wgt : WEIGHTS_V4_8U;
 };
@@ -70,7 +70,7 @@ Out mskin(In v) {
     float s = eye.w * vu_spec(n, light.xyz, e * rsqrt(dot(e, e) + 1e-12f));
     float4 c = amb + lcol * d;
     Out o;
-    o.st = float4(vu::itof12(v.uv) * q, q, 0);
+    o.st = float4(vu::itof12(v.uv) * q, 0);
     o.rgbaq = int4(min(float4(c.xyz, s), (float4)255));
     o.xyz2 = vu::ftoi4(p * q);
     return o;
