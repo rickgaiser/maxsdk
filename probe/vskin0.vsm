@@ -1,0 +1,168 @@
+; VU0 skinning kernels for probe/p15_vu0skin.c: a vertex of up to four
+; joints, the joint matrices blended by the weights, the position and the
+; normal moved by them, the normal made 127 long (demos/model/model.c,
+; skin_vertices).
+;
+; Data memory: the palette, column k of joint slot j at 32 * k + j (so a
+; slot is its own LQ offset); the batch kernel's vertices from 128.
+; Constants (set by vs0_init): vf31.x 127.
+;
+; vs0_a, vs0_b (addresses 0 and 64): one vertex from VF registers, which
+; the EE fills (QMTC2) while the other program runs: in P (position, s32),
+; N (normal, s32), J (slots, s32), W (weights 0..255, s32); out R (the
+; position, f32) and M (the normal, s32). vs0_a: P..W vf1..vf4, R vf5,
+; M vf6; vs0_b: vf7..vf10, vf11, vf12. vf13..vf30 are the programs'.
+;
+; vs0_batch (128): n vertices (ITOP) unpacked by VIF0: P at 128, N at 160,
+; J at 192, W at 224 (32 each); R over P, M over N.
+;
+; vs0_pa, vs0_pb (256, 320): vs0_a and vs0_b pipelined (see there).
+	.section .vutext, "ax", @progbits
+	.globl vskin0_vu
+vskin0_vu:
+
+; one vertex: P N J W in, R M out; the I register holds 1 / 255
+	.macro skin1 p, n, j, w, r, m
+	itof0.xyzw \w, \w		mtir vi1, \j\()x
+	itof0.xyzw \p, \p		mtir vi4, \j\()y
+	itof0.xyzw \n, \n		mtir vi5, \j\()z
+	muli.xyzw \w, \w, i		mtir vi6, \j\()w
+	nop				lq.xyzw vf13, 0(vi1)
+	nop				lq.xyzw vf14, 0(vi4)
+	nop				lq.xyzw vf15, 0(vi5)
+	nop				lq.xyzw vf16, 0(vi6)
+	mulax.xyzw acc, vf13, \w\()x	lq.xyzw vf17, 32(vi1)
+	madday.xyzw acc, vf14, \w\()y	lq.xyzw vf18, 32(vi4)
+	maddaz.xyzw acc, vf15, \w\()z	lq.xyzw vf19, 32(vi5)
+	maddw.xyzw vf25, vf16, \w\()w	lq.xyzw vf20, 32(vi6)
+	mulax.xyzw acc, vf17, \w\()x	lq.xyzw vf13, 64(vi1)
+	madday.xyzw acc, vf18, \w\()y	lq.xyzw vf14, 64(vi4)
+	maddaz.xyzw acc, vf19, \w\()z	lq.xyzw vf15, 64(vi5)
+	maddw.xyzw vf26, vf20, \w\()w	lq.xyzw vf16, 64(vi6)
+	mulax.xyzw acc, vf13, \w\()x	lq.xyzw vf17, 96(vi1)
+	madday.xyzw acc, vf14, \w\()y	lq.xyzw vf18, 96(vi4)
+	maddaz.xyzw acc, vf15, \w\()z	lq.xyzw vf19, 96(vi5)
+	maddw.xyzw vf27, vf16, \w\()w	lq.xyzw vf20, 96(vi6)
+	mulax.xyzw acc, vf17, \w\()x	nop
+	madday.xyzw acc, vf18, \w\()y	nop
+	maddaz.xyzw acc, vf19, \w\()z	nop
+	maddw.xyzw vf28, vf20, \w\()w	nop
+	mulax.xyz acc, vf25, \n\()x	nop
+	madday.xyz acc, vf26, \n\()y	nop
+	maddz.xyz vf21, vf27, \n\()z	nop
+	mulax.xyzw acc, vf25, \p\()x	nop
+	madday.xyzw acc, vf26, \p\()y	nop
+	maddaz.xyzw acc, vf27, \p\()z	nop
+	maddw.xyzw \r, vf28, vf0w	nop
+	mul.xyz vf22, vf21, vf21	nop
+	addy.x vf22, vf22, vf22y	nop
+	addz.x vf22, vf22, vf22z	nop
+	nop				rsqrt q, vf31x, vf22x
+	nop				waitq
+	mulq.xyz vf21, vf21, q		nop
+	ftoi0.xyzw \m, vf21		nop
+	.endm
+
+vs0_a:
+	nop				loi 0x3b808081
+	skin1 vf1, vf2, vf3, vf4, vf5, vf6
+	nop				nop
+	nop[e]				nop
+	nop				nop
+
+	.org 64 * 8
+vs0_b:
+	nop				loi 0x3b808081
+	skin1 vf7, vf8, vf9, vf10, vf11, vf12
+	nop				nop
+	nop[e]				nop
+	nop				nop
+
+	.org 128 * 8
+vs0_batch:
+	nop				xitop vi7
+	nop				iaddiu vi2, vi0, 128
+	nop				loi 0x3b808081
+loop:
+	nop				lq.xyzw vf1, 0(vi2)
+	nop				lq.xyzw vf2, 32(vi2)
+	nop				lq.xyzw vf3, 64(vi2)
+	nop				lq.xyzw vf4, 96(vi2)
+	skin1 vf1, vf2, vf3, vf4, vf5, vf6
+	nop				iaddi vi7, vi7, -1
+	nop				sq.xyzw vf5, 0(vi2)
+	nop				sq.xyzw vf6, 32(vi2)
+	nop				ibne vi7, vi0, loop
+	nop				iaddiu vi2, vi2, 1
+	nop[e]				nop
+	nop				nop
+
+; vs0_pa, vs0_pb (256, 320): pipelined over the two sets. A call does the
+; head of its vertex (R; the normal T and its square length S in its set's
+; vf21, vf22 or vf23, vf24) and the tail of the other set's last vertex
+; (its M from that set's T and S): vs0_pa ends the vertex of vs0_pb in vf12,
+; vs0_pb that of vs0_pa in vf6. The tail's RSQRT is issued first; Q is read
+; 14 or more words later (not interlocked).
+	.macro skin2 p, n, j, w, r, t, s, ot, os, om
+	nop				rsqrt q, vf31x, \os\()x
+	itof0.xyzw \w, \w		mtir vi1, \j\()x
+	itof0.xyzw \p, \p		mtir vi4, \j\()y
+	itof0.xyzw \n, \n		mtir vi5, \j\()z
+	muli.xyzw \w, \w, i		mtir vi6, \j\()w
+	nop				lq.xyzw vf13, 0(vi1)
+	nop				lq.xyzw vf14, 0(vi4)
+	nop				lq.xyzw vf15, 0(vi5)
+	nop				lq.xyzw vf16, 0(vi6)
+	mulax.xyzw acc, vf13, \w\()x	lq.xyzw vf17, 32(vi1)
+	madday.xyzw acc, vf14, \w\()y	lq.xyzw vf18, 32(vi4)
+	maddaz.xyzw acc, vf15, \w\()z	lq.xyzw vf19, 32(vi5)
+	maddw.xyzw vf25, vf16, \w\()w	lq.xyzw vf20, 32(vi6)
+	mulax.xyzw acc, vf17, \w\()x	lq.xyzw vf13, 64(vi1)
+	madday.xyzw acc, vf18, \w\()y	lq.xyzw vf14, 64(vi4)
+	maddaz.xyzw acc, vf19, \w\()z	lq.xyzw vf15, 64(vi5)
+	maddw.xyzw vf26, vf20, \w\()w	lq.xyzw vf16, 64(vi6)
+	mulax.xyzw acc, vf13, \w\()x	lq.xyzw vf17, 96(vi1)
+	madday.xyzw acc, vf14, \w\()y	lq.xyzw vf18, 96(vi4)
+	maddaz.xyzw acc, vf15, \w\()z	lq.xyzw vf19, 96(vi5)
+	maddw.xyzw vf27, vf16, \w\()w	lq.xyzw vf20, 96(vi6)
+	mulax.xyz acc, vf25, \n\()x	nop
+	madday.xyz acc, vf26, \n\()y	nop
+	maddz.xyz \t, vf27, \n\()z	nop
+	mulax.xyzw acc, vf17, \w\()x	nop
+	madday.xyzw acc, vf18, \w\()y	nop
+	maddaz.xyzw acc, vf19, \w\()z	nop
+	maddw.xyzw vf28, vf20, \w\()w	nop
+	mul.xyz \s, \t, \t		nop
+	mulq.xyz vf29, \ot, q		nop
+	mulax.xyzw acc, vf25, \p\()x	nop
+	madday.xyzw acc, vf26, \p\()y	nop
+	maddaz.xyzw acc, vf27, \p\()z	nop
+	maddw.xyzw \r, vf28, vf0w	nop
+	addy.x \s, \s, \s\()y		nop
+	ftoi0.xyzw \om, vf29		nop
+	addz.x \s, \s, \s\()z		nop
+	.endm
+
+	.org 192 * 8
+vs0_init:
+	nop				loi 127.0
+	addi.x vf31, vf0, i		nop
+	nop[e]				nop
+	nop				nop
+
+	.org 256 * 8
+vs0_pa:
+	nop				loi 0x3b808081
+	skin2 vf1, vf2, vf3, vf4, vf5, vf21, vf22, vf23, vf24, vf12
+	nop[e]				nop
+	nop				nop
+
+	.org 320 * 8
+vs0_pb:
+	nop				loi 0x3b808081
+	skin2 vf7, vf8, vf9, vf10, vf11, vf23, vf24, vf21, vf22, vf6
+	nop[e]				nop
+	nop				nop
+
+	.globl vskin0_vu_end
+vskin0_vu_end:

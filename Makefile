@@ -152,6 +152,7 @@ $(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(H
 # VU0 macro mode (COP2 instructions in inline asm)
 $(OUT)/probe/p10_vucopy.elf: PROBE_CFLAGS = -mvu0
 $(OUT)/probe/p11_vu0mix.elf: PROBE_CFLAGS = -mvu0
+$(OUT)/probe/p15_vu0skin.elf: PROBE_CFLAGS = -mvu0 -fapprox-func
 
 # A demo's C file finds the headers of its directory and demos/common, and
 # links the data of DEMO_OBJS_<program>.

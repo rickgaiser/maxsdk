@@ -7,20 +7,23 @@ then to VU0 micro mode (HLSL compute). Toolchain: the feature tree (`r5900-featu
 | # | Target | Kind | Effect | Status (2026-10-25 22:00 build) |
 |---|---|---|---|---|
 | 1 | VU (HLSL) | crash / cannot select | **blocks** the VU0 skinning program: any `uint` `/ 4`, `>> n` | fixed |
-| 2 | VU (HLSL) | unchecked, behind 1 | what the skinning program needs next | checked: see 10-12 |
+| 2 | VU (HLSL) | unchecked, behind 1 | what the skinning program needs next | checked 2026-10-26 (docs/llvm-issues/vskin.hlsl, with `asint` for the weights): all items done: LQ + ITOF0 for the VIF ints (2 a vertex), FTOI0 + SQ in VF, ILW + LQ for the palette, packing as MR32/MOVE in the lower pipe, stores past n. Left: the loop speed, 182 words for 4 vertices (45.5 a vertex, 145 upper ops), not pipelined: see 12 |
 | 3 | Mips `-mvu0` | slow code | a scalar into a VU0 vector goes through the stack | fixed (`mfc1` + `qmtc2`) |
 | 4 | Mips R5900 (MMI) | slow code | `v4i32` from four GPRs goes through the stack (also without `-mvu0`) | fixed (`pextlw` + `pcpyld`) |
 | 5 | Mips R5900 (MMI) | slow code | `u8x4`/`s8x4` → `v4i32` goes byte by byte through the stack (also without `-mvu0`) | fixed (`pextlb`/`pextlh`, `psraw`; `ppach`/`ppacb` back) |
 | 6 | Mips `-mvu0` | slow code | storing lanes of a VU0 vector goes through the FPU | fixed (`qmfc2` + `sw`) |
-| 7 | VU (HLSL) | slow code | `mskin` (VU1): 112 cycles a vertex, one vertex per loop iteration | improved after 22:00: pipelined at II 95 (ResMII 72), ~96 cycles a vertex (V3-32 build) |
+| 7 | VU (HLSL) | slow code | `mskin` (VU1): 112 cycles a vertex, one vertex per loop iteration | improved (af4807c366f1): the pipeliner's II 85 stalled after register allocation (89 words, 101 cycles); VULoopScheduler now bisects the lengths its step budget did not reach: 88 words in 88 cycles a vertex. PS2 (FOX, 8 x 8 copies): MSKIN strips 37.6 -> 43.1 fps, indexed 72.2 -> 79.8 fps, same pictures |
 | 8 | VU (HLSL) | error | **blocks** V3-16 positions in `mskin_ix`: one more VF register than 31, no spill room | fixed; mskin uses V3-16 now |
 | 9 | VU (HLSL) | slow code | `float3(int3) * (1.0 / 32768.0)` is ITOF0 + MUL, not ITOF15 | fixed |
-| 10 | VU (HLSL) | slow compile | llc takes 122 s for `vskin.hlsl` (one VU0 program) | improved after 22:00: 44 s (the pipeliner's lifetime shortening skips or limits its register pressure evaluations) |
+| 10 | VU (HLSL) | slow compile | llc takes 122 s for `vskin.hlsl` (one VU0 program) | fixed (4dab979e941b): 9.5 s (was 122 s, 44 s after 22:00). All of it was the pipeliner trying II 151-191, each schedule needing 24-150 registers beyond the limit when the lifetime budget ran out; the II search now stops after 8 such IIs in a row (`-pipeliner-lifetime-budget-iis`). Same code for all 35 maxsdk programs |
 | 11 | VU (HLSL) | slow code | vskin: 31 lane inserts in the upper pipe a group (MR32 / MOVE in the lower would do) | partly after 22:00: 36 → 28 upper moves; MR32/MOVE where the lower pipe has room |
-| 12 | VU (HLSL) | slow code | vskin: the group loop is not software pipelined: 46 cycles a vertex, ~31 upper ops | the false recurrence is gone after 22:00 (VULoopAliasScopes proves the `x` stores past n disjoint from the loads: RecMII 85 → 2); still not pipelined: four vertices a body, the best schedule (II 210) is no shorter than the loop (209 words) |
+| 12 | VU (HLSL) | slow code | vskin: the group loop is not software pipelined: 46 cycles a vertex, ~31 upper ops | not pipelinable as written: at every II up to 191 the overlap of two groups (four vertices each) needs far more than the 28 VF registers, and the unpipelined loop is 209 words. One vertex an iteration (or two) would be the way; that is the shader's structure, not the compiler |
 | 13 | Mips `-mvu0` (MachinePipeliner) | **wrong code** | the EE skinning loop of one joint without normals, software pipelined, writes wrong positions (2084 of 99,673 vertices) | not the compiler: PCSX2's EE recompiler. With the EE interpreter (`EnableEE = false`) the same ELF gives 0 differences; the trigger is MipsR5900Issue's order of the kernel (`pextlh $14, ...` right after `qmtc2 $14, $vf15` after a VMADDA), which is equivalent in program order. Confirmed on the PS2 (2026-10-26): `m13_p.elf` gives `micro normals 0 vs 1: 0 positions differ` |
 | 14 | clang | pragma lost | `#pragma clang loop unroll_count(2) pipeline(disable)` drops the `pipeline(disable)` (also as two pragmas) | fixed (f6def3308e3b): `pipeline.disable` is in the unrolled loop's `followup_all` |
-| 15 | Mips `-mvu0` | slow code | `127 / sqrt(dot)` of a VU0 vector goes out to the FPU and back (QMFC2, MTC1, SQRT.S, DIV.S, MFC1, QMTC2): ~3 of 16 ms of EE skinning a frame | fixed with afn (cdd3e5c6f6b0): VADDx for the sum, VRSQRT, VWAITQ, VMULq; model.c needs `-fapprox-func` (or `-ffast-math`) for it; without afn still SQRT.S + DIV.S |
+| 15 | Mips `-mvu0` | slow code | `127 / sqrt(dot)` of a VU0 vector goes out to the FPU and back (QMFC2, MTC1, SQRT.S, DIV.S, MFC1, QMTC2): ~3 of 16 ms of EE skinning a frame | fixed with afn (cdd3e5c6f6b0); the model Makefile now builds model.c with `-mvu0 -fapprox-func` |
+| 16 | Mips `-mvu0` (asm) | missing instructions | `vcallms`, `vcallmsr`, and `cfc2`/`ctc2` with VU0 control or VI registers are not accepted; micro mode needs them for every call (`.word` for now) | open (2026-10-26) |
+| 17 | clang `-mvu0` | missing feature | no way to keep VF registers reserved across asm statements (`-ffixed-vfN` or a register variable): a register-fed VU0 micro program's inputs and results stay in vf1..vf12 between the calls | open (2026-10-26) |
+| 18 | Mips R5900 (MMI) | slow code | four bytes zero-extended to words: the halfword step goes through the stack (SQ, 4 LHU + 8 SH, LQ) instead of `PEXTLH rd, $zero, rs` | open (2026-10-26) |
 
 Changes after the 22:00 build (feature tree, uncommitted): the narrowed ILW of mskin's joint
 indices kept no alias scopes (VUNarrowInt), which made a false 110-cycle recurrence; joint row
@@ -288,6 +291,27 @@ operations that do not pipeline and six moves on the chain. VU0 has VRSQRT Q, VF
 VSQRT); with VWAITQ and VMULQ the scale would stay in VU0, the way `VDIV_V` / `VMULQ_V` already
 do division. In the demo the normals' renormalization is ~3 of the 16 ms of EE skinning a frame
 (PCSX2, measured by leaving it out). `rsqrt.s` (afn) would at least remove the DIV.S.
+
+## 16-18. VU0 micro mode fed through VF registers (probe/p15_vu0skin.c)
+
+The probe skins with VU0 three ways: macro mode (model.c's loops), micro mode fed through VF
+registers (two register sets: the EE fills one with QMTC2 while VU0 runs the program of the
+other, VCALLMS starts the next program when the running one ends, SQC2 / QMFC2 read the
+results), and micro mode fed by VIF0 DMA. All give the same results as macro mode (PCSX2,
+2026-10-26). The EE side is written in assembly for now, because of these:
+
+- 16: `docs/llvm-issues/mvu0-cop2-asm.c`. The assembler takes QMTC2, QMFC2, LQC2, SQC2 and
+  VNOP with `-mvu0`, but not VCALLMS, VCALLMSR, or CFC2 / CTC2 with a VU0 control register
+  (vi29 VPU-STAT, vi27 CMSAR0, vi28 FBRST) or a VI register. maxsdk uses `.word`.
+- 17: the same file. The inputs and results of the two sets (vf1..vf12) are live between the
+  asm statements. A clobber covers only its own statement and there is no `-ffixed-vfN`, so
+  any `-mvu0` code the compiler puts in between may overwrite them, and its macro
+  instructions would also wait for the running micro program (`docs/vu0.md`). Today the
+  register-fed loop must not contain float vector code.
+- 18: `docs/llvm-issues/mmi-zext-halfword.c`. The joint slots and weights need four bytes
+  zero-extended to words. PEXTLB with `$zero` is found for the bytes; the halfwords then go
+  through the stack (SQ, LHU / SH, LQ) instead of `PEXTLH rd, $zero, rs`. The sign-extended
+  form with the zeros below (model.c's normals) is fine.
 
 ## Cost of V3-16 positions in the indexed programs (not a compiler bug)
 
