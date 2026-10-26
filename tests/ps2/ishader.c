@@ -6,8 +6,9 @@
    outputs of the strip program for the same vertex, bit for bit. The batches
    alternate between the two buffers and the two uniform blocks; the other
    block holds other uniforms. The strip programs of lvl0-2 are checked
-   against the EE by tests/ps2/shader.c; that of mskin (joint matrices from
-   uniforms at run-time indices, integer vectors) is checked here. */
+   against the EE by tests/ps2/shader.c; those of mskin (joint matrices from
+   uniforms at run-time indices, integer vectors) and mscei (ps2gl's SCEI
+   lighting) are checked here. */
 
 #include "lvl0.h"
 #include "lvl0_ix.h"
@@ -19,6 +20,8 @@
 #include "mflat_ix.h"
 #include "mlit.h"
 #include "mlit_ix.h"
+#include "mscei.h"
+#include "mscei_ix.h"
 #include "mskin.h"
 #include "mskin_ix.h"
 #include "mtex.h"
@@ -29,13 +32,15 @@ extern const u8 lvl0_vu[], lvl0_vu_end[], lvl1_vu[], lvl1_vu_end[], lvl2_vu[], l
     lvl0_ix_vu[], lvl0_ix_vu_end[], lvl1_ix_vu[], lvl1_ix_vu_end[], lvl2_ix_vu[],
     lvl2_ix_vu_end[], mflat_vu[], mflat_vu_end[], mlit_vu[], mlit_vu_end[], mtex_vu[],
     mtex_vu_end[], mskin_vu[], mskin_vu_end[], mflat_ix_vu[], mflat_ix_vu_end[], mlit_ix_vu[],
-    mlit_ix_vu_end[], mtex_ix_vu[], mtex_ix_vu_end[], mskin_ix_vu[], mskin_ix_vu_end[];
+    mlit_ix_vu_end[], mtex_ix_vu[], mtex_ix_vu_end[], mskin_ix_vu[], mskin_ix_vu_end[],
+    mscei_vu[], mscei_vu_end[], mscei_ix_vu[], mscei_ix_vu_end[];
 
 #define NV 64
 #define NI 512
 #define NUNI 112
 #define NJOINT 24
 static float pos[NV + 16][3] MX_ALIGNED(16);
+static s16 pos16[NV + 16][3] MX_ALIGNED(16); /* mskin's V3-16: pos * 16384 */
 static s8 nrm[NV + 16][4] MX_ALIGNED(16);
 static u32 col[NV + 16] MX_ALIGNED(16);
 static s16 uv[NV + 16][2] MX_ALIGNED(16);
@@ -57,17 +62,17 @@ static float rnd(void) { return (float)(s32)(rnd32() >> 9 & 0xFFFF) / 32768.0f -
 
 static u32 prim; /* a Gouraud strip */
 
-enum { POS, NRM, COL, UV, JNT, WGT };
+enum { POS, NRM, COL, UV, JNT, WGT, POS16 };
 struct prog {
   const char *name;
   struct mx_shader strip, ix;
-  int in[6], nin;           /* the streams, in the order of the inputs */
+  int in[7], nin;           /* the streams, in the order of the inputs */
   int lit, tex, model;      /* uniforms: light (lvl or model style), the model demo's */
   void (*ref)(u32 n);       /* the EE version of the strip program, or 0 */
 };
 
 static const void *stream(int k) {
-  static const void *const all[6] = {pos, nrm, col, uv, jnt, wgt};
+  static const void *const all[7] = {pos, nrm, col, uv, jnt, wgt, pos16};
   return all[k];
 }
 
@@ -172,10 +177,11 @@ static float fabsf_(float a) { return a < 0 ? -a : a; }
 static float rsqrtf_(float v) { return 1.0f / __builtin_sqrtf(v); }
 
 static int ref_bad;
+static const char *ref_name; /* the program the EE version is of */
 static void near_int(u32 i, const char *what, int k, u32 got, s32 want, s32 tol) {
   s32 d = (s32)got - want;
   if ((d > tol || -d > tol) && ref_bad++ < 6)
-    mx_printf("mskin vertex %u: %s[%d] = %d, expected %d\n", i, what, k, (s32)got, want);
+    mx_printf("%s vertex %u: %s[%d] = %d, expected %d\n", ref_name, i, what, k, (s32)got, want);
 }
 static void near_float(u32 i, const char *what, int k, u32 got, float want) {
   union {
@@ -214,7 +220,8 @@ static void ref_skin(u32 n) {
         for (int f = 0; f < 4; f++)
           c[m][f] += uni[VU_MSKIN_JOINT + 4 * jnt[i][k] + m][f] * w;
     }
-    float v[3] = {pos[i][0], pos[i][1], pos[i][2]}, mp[4], nv[3], p[4];
+    float v[3] = {pos16[i][0] / 32768.0f, pos16[i][1] / 32768.0f, pos16[i][2] / 32768.0f};
+    float mp[4], nv[3], p[4];
     for (int f = 0; f < 4; f++)
       mp[f] = c[0][f] * v[0] + c[1][f] * v[1] + c[2][f] * v[2] + c[3][f];
     for (int f = 0; f < 3; f++)
@@ -302,12 +309,14 @@ int main(void) {
       {"mtex", MX_VU_SHADER(MTEX, mtex_vu, mtex_vu_end),
        MX_VU_ISHADER(IX_MTEX, mtex_ix_vu, mtex_ix_vu_end), {POS, NRM, UV}, 3, 1, 1, 1, 0},
       {"mskin", MX_VU_SHADER(MSKIN, mskin_vu, mskin_vu_end),
-       MX_VU_ISHADER(IX_MSKIN, mskin_ix_vu, mskin_ix_vu_end), {POS, NRM, UV, JNT, WGT}, 5, 1,
+       MX_VU_ISHADER(IX_MSKIN, mskin_ix_vu, mskin_ix_vu_end), {POS16, NRM, UV, JNT, WGT}, 5, 1,
        1, 2, ref_skin},
   };
   const u32 nprog = sizeof pr / sizeof pr[0];
   for (u32 i = 0; i < NV + 16; i++) {
     pos[i][0] = rnd(), pos[i][1] = rnd(), pos[i][2] = rnd();
+    for (int k = 0; k < 3; k++)
+      pos16[i][k] = (s16)(s32)(pos[i][k] * 16384.0f);
     float a = rnd(), b = rnd(), c = rnd(), l = a * a + b * b + c * c + 1e-3f, r = 1;
     for (int k = 0; k < 8; k++)
       r = r * (1.5f - 0.5f * l * r * r);
@@ -325,6 +334,7 @@ int main(void) {
     }
   }
   mx_dcache_writeback(pos, sizeof pos);
+  mx_dcache_writeback(pos16, sizeof pos16);
   mx_dcache_writeback(nrm, sizeof nrm);
   mx_dcache_writeback(col, sizeof col);
   mx_dcache_writeback(uv, sizeof uv);

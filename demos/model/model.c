@@ -9,8 +9,20 @@
      mflat  position, one colour
      mlit   + normal, one light
      mtex   + texture, perspective correct
+     mscei  ps2gl's SCEI shader: three lights, clamped, textured
+     msceic + its clipping: a triangle with a vertex beyond the guard band
+            is not drawn (ADC); strips only (indexed, it is drawn as strips)
      mskin  + skinning: four joints a vertex, the animation baked by the
             converter (a skinned model only)
+
+   A skinned model animates with every program: mskin skins on VU1, for the
+   others the EE skins the vertices once a frame (VU0 macro mode) into the
+   streams they read. -static: they draw the rest pose.
+
+   A model with levels of detail (fbx2glb.py --lods) draws each part at the
+   level its projected size asks for: level 0 down to a radius of R0 / 2
+   pixels, one level more at each halving (-lodr <px>: R0, 512 by default;
+   -lod <k>: always level k).
 
    The models: host:<argv[1]> .. (.mxm files, from ps2client's directory),
    else the one built in (Fox, demos/model/assets). The run is of the first;
@@ -24,14 +36,20 @@
 
    The run, without a pad: for each shader one frame as strips and one
    indexed, which must be the same picture (the outputs are the same, bit
-   for bit); then each shader both ways without vsync for BENCH_FRAMES
-   frames, BENCH_COPIES x BENCH_COPIES copies (frames, triangles, vertices
-   and indices a second, the units' busy shares); then a screenshot
-   (host:model.tga). START on pad 0 during the run: the interactive mode:
+   for bit; msceic: the same as mscei, nothing is beyond the guard band);
+   then each shader both ways without vsync for BENCH_FRAMES frames,
+   BENCH_COPIES x BENCH_COPIES copies (frames, triangles, vertices and
+   indices a second, the units' busy shares); then a screenshot
+   (host:model.tga). START on pad 0 during the run: the interactive mode.
+
+   It starts with mscei, the model animated, and the camera on a flyby: it
+   circles the model, rising and falling, nearer and farther (never nearer
+   than the whole model fits the guard band). A stick, the D-pad, R1 or L1
+   take the camera over where it is:
 
      left stick          walk (as Fortnite)       right stick         look around
      D-pad               turn, walk forwards/back  R1 / L1             up / down
-     L3                  the view as it started
+     L3                  the flyby again
      SQUARE              next shader               CROSS              strips / indexed
      TRIANGLE            copies 1, 2x2 .. 16x16 (a single model: springs on/off)
      CIRCLE              next animation
@@ -58,6 +76,9 @@
 #include "mflat_ix.h"
 #include "mlit.h"
 #include "mlit_ix.h"
+#include "mscei.h"
+#include "mscei_ix.h"
+#include "msceic.h"
 #include "mskin.h"
 #include "mskin_ix.h"
 #include "mtex.h"
@@ -65,8 +86,9 @@
 #include "mxm.h"
 
 extern const u8 mflat_vu[], mflat_vu_end[], mlit_vu[], mlit_vu_end[], mtex_vu[], mtex_vu_end[],
-    mskin_vu[], mskin_vu_end[], mflat_ix_vu[], mflat_ix_vu_end[], mlit_ix_vu[], mlit_ix_vu_end[],
-    mtex_ix_vu[], mtex_ix_vu_end[], mskin_ix_vu[], mskin_ix_vu_end[];
+    mscei_vu[], mscei_vu_end[], msceic_vu[], msceic_vu_end[], mskin_vu[], mskin_vu_end[],
+    mflat_ix_vu[], mflat_ix_vu_end[], mlit_ix_vu[], mlit_ix_vu_end[], mtex_ix_vu[],
+    mtex_ix_vu_end[], mscei_ix_vu[], mscei_ix_vu_end[], mskin_ix_vu[], mskin_ix_vu_end[];
 extern const u8 model_fox[], model_fox_end[];
 
 #ifndef BENCH_FRAMES
@@ -82,6 +104,9 @@ _Static_assert(VU_MFLAT_MVP == VU_IX_MFLAT_MVP && VU_MFLAT_COL == VU_IX_MFLAT_CO
 _Static_assert(VU_MLIT_LIGHT == VU_IX_MLIT_LIGHT && VU_MLIT_AMB == VU_IX_MLIT_AMB, "");
 _Static_assert(VU_MTEX_LIGHT == VU_IX_MTEX_LIGHT && VU_MTEX_AMB == VU_IX_MTEX_AMB, "");
 _Static_assert(VU_MSKIN_JOINT == VU_IX_MSKIN_JOINT && VU_MSKIN_AMB == VU_IX_MSKIN_AMB, "");
+_Static_assert(VU_MSCEI_A == VU_IX_MSCEI_A && VU_MSCEI_SCL == VU_IX_MSCEI_SCL &&
+                   VU_MSCEIC_A == VU_IX_MSCEI_A && VU_MSCEIC_SCL == VU_IX_MSCEI_SCL,
+               "");
 #define JOINTS 24 /* demos/model/mskin.hlsl */
 _Static_assert(VU_IX_MSKIN_UNI_QW == VU_IX_MSKIN_JOINT + 4 * JOINTS, "");
 
@@ -106,6 +131,12 @@ static float sinf_(float a) {
 }
 static float cosf_(float a) { return sinf_(a + 1.57079633f); }
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+static u32 atou_(const char *s) {
+  u32 v = 0;
+  while (*s >= '0' && *s <= '9')
+    v = v * 10 + (u32)(*s++ - '0');
+  return v;
+}
 static int strcmp_(const char *a, const char *b) {
   while (*a && *a == *b)
     a++, b++;
@@ -118,6 +149,7 @@ static float itof(s32 v) { return (float)v; }
 #define MAX_FILE (12u << 20)
 #define MAX_CLUSTER 16384
 #define MAX_MAT 16
+#define MAX_PAL 256
 /* GS memory in blocks (256 bytes), and the HUD's texture at the end of what
    the model's take: 256 x 8 CT32, 4 pages wide */
 #define GS_BLOCKS (4u << 20 >> 8)
@@ -128,6 +160,19 @@ static struct mx_ibatch ibatch[2][MAX_CLUSTER];
 /* of each cluster: the joint with the most weight (its sphere moves with it;
    0xFFFF: none), and its triangles (the strip without the joins) */
 static u16 cl_joint[MAX_CLUSTER], cl_tris[MAX_CLUSTER];
+/* its first vertices of one joint (weight 255 in the first slot), the ones
+   of two after them (gltf2mxm.py puts them first, in that order): the EE
+   skins them in loops of their own */
+static u16 cl_n1[MAX_CLUSTER], cl_n2[MAX_CLUSTER];
+/* The draws of the clusters: the runs of one material and level ([1]: and
+   palette, mskin's), with their counts. */
+#define MAX_GROUP 4096
+static struct group {
+  u32 c, e; /* clusters c .. e - 1 */
+  u16 mat, pal;
+  u32 nv, ni, tris;
+} grp[2][MAX_GROUP];
+static u32 ngrp[2];
 
 static struct {
   const struct mxm_header *h;
@@ -140,9 +185,30 @@ static struct {
   u32 tbp[MAX_MAT], cbp[MAX_MAT]; /* the textures and the CLUTs (T8) in GS memory */
   u32 tbp_free; /* the first block after the textures */
   const char *name;
+  int skinned; /* animations, a palette: mskin draws it */
+  int ee_skin; /* and the EE can skin it for the other programs */
 } M;
 
 static const void *sec(int s) { return M.h->off[s] ? M.base + M.h->off[s] : 0; }
+
+/* ---- levels of detail ------------------------------------------------------------------ */
+
+/* A model may have levels of detail (gltf2mxm.py: mesh nodes <name>_LOD<k>,
+   fbx2glb.py --lods): level k has about 2^-k of the triangles of each part.
+   A cluster's or strip run's mat has the material in its low byte and the
+   level in its high one. Each frame and copy, each material is drawn at one
+   level: the one its projected size asks for, the same rule for every
+   part: level 0 down to a radius of lod_r0 / 2 pixels, then one level more
+   at each halving of the radius (-lodr <px>; -lod <k>: always level k). */
+#define MAX_COPIES (16 * 16)
+#define MAX_STRIP 4096
+static u32 nlod;                /* levels of the model */
+static float part[MAX_MAT][4];  /* each material's level 0: a sphere in model space */
+static u32 run_tris[MAX_STRIP]; /* the triangles of each strip run */
+static u8 lod_sel[MAX_COPIES][MAX_MAT];
+static u16 lod_need[MAX_MAT];   /* the levels a copy draws this frame (bits) */
+static int lod_force = -1;
+static float lod_r0 = 512;
 
 /* The model at base (size bytes): checked, its indices made for each
    number of outputs, its textures uploaded. Returns 0, or -1. */
@@ -176,7 +242,7 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
   for (u32 c = 0; c < h->ncluster; c++) {
     const struct mxm_cluster *k = &M.cl[c];
     if (k->nv > h->max_nv || k->ni > h->max_ni || k->first % 4 || k->first + k->nv > h->nvert ||
-        k->idx % 16 || k->mat >= h->nmat || (h->npal && k->pal >= h->npal)) {
+        k->idx % 16 || (k->mat & 0xFF) >= h->nmat || (h->npal && k->pal >= h->npal)) {
       mx_printf("model: cluster %u is not right\n", c);
       return -1;
     }
@@ -185,6 +251,10 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
   }
   if (idx_bytes > sizeof idx_buf[0]) {
     mx_printf("model: %u bytes of indices\n", idx_bytes);
+    return -1;
+  }
+  if (h->npal > MAX_PAL) {
+    mx_printf("model: %u palettes\n", h->npal);
     return -1;
   }
   for (u32 p = 0; p < h->npal; p++)
@@ -201,16 +271,84 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
       t += q[i] != q[i - 1] && q[i] != q[i - 2] && q[i - 1] != q[i - 2];
     cl_tris[c] = (u16)t;
     cl_joint[c] = 0xFFFF;
+    cl_n1[c] = cl_n2[c] = 0;
     if (jnt && wgt && h->npal) {
+      u32 v = k->first, e = k->first + k->nv;
+      while (v < e && wgt[4 * v] == 255)
+        v++;
+      cl_n1[c] = (u16)(v - k->first);
+      while (v < e && !wgt[4 * v + 2] && !wgt[4 * v + 3])
+        v++;
+      cl_n2[c] = (u16)(v - k->first - cl_n1[c]);
       u32 sum[MXM_PAL_MAX] = {0}, best = 0;
       for (u32 v = k->first; v < k->first + k->nv; v++)
-        for (int i = 0; i < 4; i++)
-          if (jnt[4 * v + i] < MXM_PAL_MAX)
-            sum[jnt[4 * v + i]] += wgt[4 * v + i];
+        for (int i = 0; i < 4; i++) {
+          if (jnt[4 * v + i] >= M.pal[k->pal].n) {
+            mx_printf("model: cluster %u: a joint not in its palette\n", c);
+            return -1;
+          }
+          sum[jnt[4 * v + i]] += wgt[4 * v + i];
+        }
       for (u32 s = 1; s < MXM_PAL_MAX; s++)
         best = sum[s] > sum[best] ? s : best;
       cl_joint[c] = M.pal[k->pal].joint[best];
     }
+  }
+  for (int by_pal = 0; by_pal < 2; by_pal++) {
+    u32 n = 0;
+    for (u32 c = 0; c < h->ncluster;) {
+      u32 e = c + 1;
+      while (e < h->ncluster && M.cl[e].mat == M.cl[c].mat &&
+             (!by_pal || M.cl[e].pal == M.cl[c].pal))
+        e++;
+      if (n == MAX_GROUP) {
+        mx_printf("model: more than %u draws\n", MAX_GROUP);
+        return -1;
+      }
+      struct group *g = &grp[by_pal][n++];
+      *g = (struct group){c, e, M.cl[c].mat, M.cl[c].pal, 0, 0, 0};
+      for (; c < e; c++)
+        g->nv += M.cl[c].nv, g->ni += M.cl[c].ni, g->tris += cl_tris[c];
+    }
+    ngrp[by_pal] = n;
+  }
+  /* the levels; each material's sphere from its level 0 clusters (the
+     model's without clusters); the triangles of each strip run: of its
+     clusters (the same material, level and palette), else its length */
+  if (h->nstrip > MAX_STRIP) {
+    mx_printf("model: %u strip runs\n", h->nstrip);
+    return -1;
+  }
+  nlod = 1;
+  for (u32 c = 0; c < h->ncluster; c++)
+    nlod = M.cl[c].mat >> 8 >= nlod ? (u32)(M.cl[c].mat >> 8) + 1 : nlod;
+  for (u32 r = 0; r < h->nstrip; r++)
+    nlod = M.strip[r].mat >> 8 >= nlod ? (u32)(M.strip[r].mat >> 8) + 1 : nlod;
+  for (u32 m = 0; m < h->nmat; m++) {
+    float c[3] = {0, 0, 0}, w = 0, r = 0;
+    for (u32 k = 0; k < h->ncluster; k++)
+      if (M.cl[k].mat == m) {
+        for (int i = 0; i < 3; i++)
+          c[i] += M.cl[k].sphere[i] * M.cl[k].nv;
+        w += M.cl[k].nv;
+      }
+    for (int i = 0; i < 3; i++)
+      part[m][i] = w > 0 ? c[i] / w : h->center[i];
+    for (u32 k = 0; k < h->ncluster; k++)
+      if (M.cl[k].mat == m) {
+        const float *sp = M.cl[k].sphere;
+        float d[3] = {sp[0] - part[m][0], sp[1] - part[m][1], sp[2] - part[m][2]};
+        float e = __builtin_sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) + sp[3];
+        r = e > r ? e : r;
+      }
+    part[m][3] = w > 0 ? r : h->radius;
+  }
+  for (u32 r = 0; r < h->nstrip; r++) {
+    u32 t = 0;
+    for (u32 c = 0; c < h->ncluster; c++)
+      if (M.cl[c].mat == M.strip[r].mat && M.cl[c].pal == M.strip[r].pal)
+        t += cl_tris[c];
+    run_tris[r] = h->ncluster ? t : M.strip[r].n - 2;
   }
   /* an index is the vertex times the program's outputs (2 or 3) */
   for (u32 i = 0; i < idx_bytes; i++)
@@ -294,9 +432,14 @@ static void model_add(const u8 *base, u32 size, const char *path) {
 
 /* ---- shaders ---------------------------------------------------------------------- */
 
-enum { S_FLAT, S_LIT, S_TEX, S_SKIN, S_N };
-static const char *const shader_names[S_N] = {"MFLAT", "MLIT", "MTEX", "MSKIN"};
+enum { S_FLAT, S_LIT, S_TEX, S_SCEI, S_SCEIC, S_SKIN, S_N };
+static const char *const shader_names[S_N] = {"MFLAT", "MLIT",   "MTEX",
+                                              "MSCEI", "MSCEIC", "MSKIN"};
 static struct mx_shader sh[S_N][2]; /* strip, indexed */
+/* the same, the position from the EE's skin_pos (V4-32) */
+static struct mx_shader sh_ee[S_N][2];
+/* msceic has no indexed program: indexed, it draws strips */
+static int has_ix(int shader) { return shader != S_SCEIC; }
 static const struct mx_shader *bound;
 
 static void bind(const struct mx_shader *s) {
@@ -304,22 +447,6 @@ static void bind(const struct mx_shader *s) {
     mx_frame_shader_setup(s);
     bound = s;
   }
-}
-
-/* The streams of a shader's inputs; strips: the S* streams. */
-static void streams_of(int shader, int strips, const void **st) {
-  int o = strips ? MXM_SPOS - MXM_POS : 0;
-  int k = 0;
-  if (shader == S_SKIN) {
-    st[k++] = sec(MXM_RPOS + o), st[k++] = sec(MXM_RNRM + o), st[k++] = sec(MXM_UV + o);
-    st[k++] = sec(MXM_JNT + o), st[k++] = sec(MXM_WGT + o);
-    return;
-  }
-  st[k++] = sec(MXM_POS + o);
-  if (shader >= S_LIT)
-    st[k++] = sec(MXM_NRM + o);
-  if (shader >= S_TEX)
-    st[k++] = sec(MXM_UV + o);
 }
 
 /* The vertices VU1 transforms for a strip of n drawn by mx_frame_shader_draw
@@ -342,7 +469,18 @@ static u32 strip_cost(const struct mx_shader *s, u32 n) {
 static struct {
   float yaw, pitch, dist, spin;
   int shader, indexed, copies, anim, turning, vsync;
-} V = {0.6f, 0.25f, 0, 0, S_TEX, 1, 1, 0, 1, 1};
+} V = {0.6f, 0.25f, 0, 0, S_SCEI, 1, 1, 0, 1, 1};
+
+/* the view's shader draws indexed (msceic: strips, the view as indexed) */
+static int ix_now(void) { return V.indexed && has_ix(V.shader); }
+
+/* -static: the programs but mskin draw the rest pose (skinned once) */
+static int static_pose;
+/* shader draws the model animated: mskin skins on VU1, the others draw what
+   the EE skinned */
+static int animated(int shader) {
+  return M.skinned && (shader == S_SKIN || !static_pose);
+}
 
 static float cam_c[3], cam_r[3], cam_u[3], cam_f[3];
 /* AA1: the GS draws the edges of the triangles with their coverage as the
@@ -362,6 +500,8 @@ static int blended(u32 m) { return (M.mat[m].flags & MXM_MAT_ALPHA) && !cutout; 
    origin) at V.dist. */
 static int fly;
 static float fly_c[3];
+/* the interactive mode's flyby: the camera circles the model by itself */
+static int flyby;
 /* the nearest depth of a cluster drawn, in world units */
 #define NEAR_Z 1.0f
 /* walking: the height of the eyes and the step a frame, world units (the
@@ -387,6 +527,12 @@ static void camera(void) {
   cam_f[0] = -sy * cp, cam_f[1] = -sp, cam_f[2] = -cy * cp;
   cam_r[0] = cy, cam_r[1] = 0, cam_r[2] = -sy; /* f x up, normalized */
   cam_u[0] = -sy * sp, cam_u[1] = cp, cam_u[2] = -cy * sp;
+}
+
+/* A direction of the world in model space (the model turned by V.spin). */
+static void turn_back(const float *w, float *m) {
+  float c = cosf_(V.spin), s = sinf_(V.spin);
+  m[0] = c * w[0] - s * w[2], m[1] = w[1], m[2] = s * w[0] + c * w[2];
 }
 
 /* The MVP columns of a copy at (ox, 0, oz): the model turned by V.spin around
@@ -416,7 +562,7 @@ static void mvp_of(float m[4][4], float ox, float oz, float light[3], float eye[
   m[3][2] = ZK;
   /* the light (world: up and to the left of the view), turned back */
   static const float L[3] = {0.45f, 0.78f, 0.43f};
-  light[0] = c * L[0] - s * L[2], light[1] = L[1], light[2] = s * L[0] + c * L[2];
+  turn_back(L, light);
   /* the eye: world -> model is the inverse of W (its rows are a rotation
      times k) */
   for (int a = 0; a < 3; a++) {
@@ -433,6 +579,7 @@ static float uni[VU_IX_MSKIN_UNI_QW + 4][4] MX_ALIGNED(16);
 static u32 cur_mat = ~0u;
 static struct {
   u32 verts, indices, tris, draws;
+  u32 skin, skinned; /* EE cycles of the skinning, vertices skinned */
 } st_frame;
 
 /* GS state for material m in pass (after the batches before it are drawn:
@@ -463,11 +610,12 @@ static void gs_state(u32 m, int pass) {
 }
 
 /* The joint matrices (four columns each) of frame of the animation. */
-static const float (*anim_mats(u32 frame))[4] {
-  const struct mxm_anim *a = &M.anim[V.anim];
+static const float (*anim_mats_of(u32 anim, u32 frame))[4] {
+  const struct mxm_anim *a = &M.anim[anim];
   const float(*mats)[4] = (const void *)((const u8 *)sec(MXM_ANIM) + a->mat);
   return mats + (frame % a->nframe) * M.h->njoint * 4;
 }
+static const float (*anim_mats(u32 frame))[4] { return anim_mats_of((u32)V.anim, frame); }
 
 /* ---- springs (MXM_PHYS) ----------------------------------------------------------- */
 
@@ -480,12 +628,13 @@ static int phys_off;
 static struct {
   int n, active, reset;  /* records; this frame's matrices moved; start again */
   int ncoll;
-  float ca[MAX_COLL][3], cb[MAX_COLL][3], cr[MAX_COLL]; /* this frame's capsules, world */
+  float ca[MAX_COLL][3], cab[MAX_COLL][3], cil2[MAX_COLL], cr[MAX_COLL]; /* this frame's
+      capsules (world): a, b - a, 1 / |b - a|^2, the radius */
   float t;               /* the time of the last step */
   float x[MAX_PHYS][3], v[MAX_PHYS][3]; /* the tips: world space (turned with the model) */
   float tp[MAX_PHYS][3];                 /* where the animation put them the step before */
   s16 slot[MAX_JOINTS];  /* of a joint in mat, -1: not moved */
-  float mat[MAX_MOVED][4][4]; /* the moved joints' matrices (four columns) */
+  float mat[MAX_MOVED][4][4] MX_ALIGNED(16); /* the moved joints' matrices (four columns) */
 } P;
 
 /* The springs of the model: the joints they move get a slot. */
@@ -520,33 +669,40 @@ static float sqrtf_(float x) { return __builtin_sqrtf(x); }
 static float dot3(const float *a, const float *b) {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
-/* The distance of x from capsule c's axis, and the closest point on it. */
-static float capsule_dist(int c, const float *x, float *q) {
-  const float *a = P.ca[c], *b = P.cb[c];
-  float ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+/* The squared distance of x from capsule c's axis, and the closest point on
+   it. */
+static float capsule_dist2(int c, const float *x, float *q) {
+  const float *a = P.ca[c], *ab = P.cab[c];
   float ax[3] = {x[0] - a[0], x[1] - a[1], x[2] - a[2]};
-  float l2 = dot3(ab, ab), t = l2 > 1e-12f ? dot3(ax, ab) / l2 : 0;
+  float t = dot3(ax, ab) * P.cil2[c];
   t = t < 0 ? 0 : t > 1 ? 1 : t;
   float d[3];
   for (int k = 0; k < 3; k++)
     q[k] = a[k] + ab[k] * t, d[k] = x[k] - q[k];
-  return sqrtf_(dot3(d, d));
+  return dot3(d, d);
 }
 
-/* The move that takes x, thick, out of the capsules, but not further out
-   than ref (the same point as the animation has it: what the animation puts
-   in a capsule may stay as deep). */
-static void capsule_push(const float *x, const float *ref, float thick, float *push) {
+/* The capsules a spring may reach this frame, each with how far out it
+   pushes the tip and the middle of the segment: its radius plus the
+   spring's thickness, but not further out than where the animation has them
+   (what the animation puts in a capsule may stay as deep). */
+struct reach {
+  int n;
+  u8 c[MAX_COLL];
+  float r2[2][MAX_COLL]; /* squared: the tip's, the middle's */
+};
+
+/* The move that takes x out of the capsules of re (k: 0 the tip, 1 the
+   middle). */
+static void capsule_push(const float *x, const struct reach *re, int k, float *push) {
   push[0] = push[1] = push[2] = 0;
-  for (int c = 0; c < P.ncoll; c++) {
-    float q[3], qr[3];
-    float d = capsule_dist(c, x, q), r = P.cr[c] + thick, dr = capsule_dist(c, ref, qr);
-    if (dr < r)
-      r = dr;
-    if (d >= r || d < 1e-6f)
+  for (int i = 0; i < re->n; i++) {
+    float q[3], r2 = re->r2[k][i], d2 = capsule_dist2(re->c[i], x, q);
+    if (d2 >= r2 || d2 < 1e-12f)
       continue;
-    for (int k = 0; k < 3; k++)
-      push[k] += (x[k] - q[k]) * (r - d) / d;
+    float d = sqrtf_(d2), f = (sqrtf_(r2) - d) / d;
+    for (int j = 0; j < 3; j++)
+      push[j] += (x[j] - q[j]) * f;
   }
 }
 
@@ -567,7 +723,7 @@ static void xform(const float (*m)[4], const float *p, float *o) {
    descendants turned about the head towards it. */
 static void phys_update(u32 frame, float t) {
   P.active = 0;
-  if (!P.n || phys_off || V.shader != S_SKIN)
+  if (!P.n || phys_off || !animated(V.shader))
     return;
   const u32 *sec_ = sec(MXM_PHYS);
   const struct mxm_phys *ph = (const void *)(sec_ + 4);
@@ -584,8 +740,13 @@ static void phys_update(u32 frame, float t) {
     float am[3], bm[3];
     xform(anim + 4 * co[c].joint, co[c].a, am);
     xform(anim + 4 * co[c].joint, co[c].b, bm);
+    float bw[3];
     to_world(cs, sn, am, P.ca[c]);
-    to_world(cs, sn, bm, P.cb[c]);
+    to_world(cs, sn, bm, bw);
+    for (int k = 0; k < 3; k++)
+      P.cab[c][k] = bw[k] - P.ca[c][k];
+    float l2 = dot3(P.cab[c], P.cab[c]);
+    P.cil2[c] = l2 > 1e-12f ? 1 / l2 : 0;
     P.cr[c] = co[c].radius;
   }
   float dt = t - P.t;
@@ -618,6 +779,22 @@ static void phys_update(u32 frame, float t) {
     float cl = cosf_(r->limit), sl = sinf_(r->limit), ca = 1;
     /* the middle of the segment as the animation has it */
     float mref[3] = {(hw[0] + tw[0]) / 2, (hw[1] + tw[1]) / 2, (hw[2] + tw[2]) / 2};
+    /* the capsules in reach: the tip is put back at len from the head after
+       each step; before the first it is where the last frame left it, and a
+       step moves it by its speed (and the pull towards tw) */
+    struct reach re;
+    float xh[3] = {x[0] - hw[0], x[1] - hw[1], x[2] - hw[2]}, far = sqrtf_(dot3(xh, xh));
+    far = (far > len ? far : len) + sqrtf_(dot3(v, v)) * dt + len;
+    re.n = 0;
+    for (int c = 0; c < P.ncoll; c++) {
+      float q[3], rr = P.cr[c] + r->radius, reach = rr + far;
+      if (capsule_dist2(c, hw, q) >= reach * reach)
+        continue;
+      float r2 = rr * rr, dt2 = capsule_dist2(c, tw, q), dm2 = capsule_dist2(c, mref, q);
+      re.c[re.n] = (u8)c;
+      re.r2[0][re.n] = dt2 < r2 ? dt2 : r2;
+      re.r2[1][re.n++] = dm2 < r2 ? dm2 : r2;
+    }
     for (int st = 0; st < steps || st == 0; st++) {
       float push[3];
       if (steps)
@@ -629,12 +806,12 @@ static void phys_update(u32 frame, float t) {
         }
       /* out of the capsules: the tip, and the middle of the segment (moving
          the tip moves it half as far); no more speed into the capsule */
-      if (P.ncoll) {
+      if (re.n) {
         float mp[3];
-        capsule_push(x, tw, r->radius, push);
+        capsule_push(x, &re, 0, push);
         float mid[3] = {(hw[0] + x[0] + push[0]) / 2, (hw[1] + x[1] + push[1]) / 2,
                         (hw[2] + x[2] + push[2]) / 2};
-        capsule_push(mid, mref, r->radius, mp);
+        capsule_push(mid, &re, 1, mp);
         for (int k = 0; k < 3; k++)
           push[k] += 2 * mp[k];
         float pl = sqrtf_(dot3(push, push));
@@ -704,10 +881,262 @@ static void phys_update(u32 frame, float t) {
   P.active = 1;
 }
 
+/* ---- skinning on the EE ------------------------------------------------------------- */
+
+/* Every program animates a skinned model, as on a PC the compute pass that
+   skins once a frame for all shaders: the EE moves the bind pose (RPOS,
+   RNRM; SRPOS, SRNRM as strips) by the joints (JNT, WGT) into skin_pos (V4-32:
+   one SQC2, the programs unpack it as V4-32 instead of POS's V3-32,
+   sh_ee) and skin_nrm (NRM's V4-8); mskin still skins on VU1 itself. Only
+   the layout drawn, each vertex once; with VU0 in macro mode (-mvu0): the
+   joint matrices blended by the weights (the vertices of one joint and of
+   two in loops of their own), the position and the normal moved by them,
+   the normal made 127 long again.
+   Frame n uses buffer n & 1: frame n - 1 may still be drawn from the other
+   (frame n - 2 is done once frame n has begun). -static: the rest pose (the
+   first animation), skinned once into each buffer. */
+#define MAX_SKIN (256u << 10)
+typedef float f32x4 __attribute__((vector_size(16)));
+typedef s32 s32x4 __attribute__((vector_size(16)));
+typedef u8 u8x4 __attribute__((vector_size(4)));
+typedef s8 s8x4 __attribute__((vector_size(4)));
+static f32x4 skin_pos[2][MAX_SKIN + 8] MX_ALIGNED(64);
+static s8x4 skin_nrm[2][MAX_SKIN + 8] MX_ALIGNED(64);
+static int skin_buf;     /* this frame's */
+static int skin_rest[2]; /* a buffer holds the rest pose of layout 1 + indexed, else 0 */
+
+/* This frame's joint matrices (four columns), the springs' where they move
+   a joint, with the bind pose's V3-16 folded in (mxm.h qsize, qoff): joint
+   j moves the position q / 32768 (ITOF15) to jq[j] (q / 32768, 1) (mskin's
+   uniforms). The EE's, je: jq with the 1 / 32768 in its columns and the
+   1 / 65536 of the way it reads q (skin_pos_in). */
+static f32x4 jq[MAX_JOINTS][4] MX_ALIGNED(16);
+static f32x4 je[MAX_JOINTS][4] MX_ALIGNED(16);
+/* je of each palette's joints, by slot: made when a frame first skins
+   with the palette (jp_frame: the frame's joints_frame) */
+static f32x4 jp[MAX_PAL][JOINTS][4] MX_ALIGNED(16);
+static u32 jp_frame[MAX_PAL], joints_frames;
+
+static void joints_frame(u32 anim, u32 frame) {
+  const float(*mats)[4] = anim_mats_of(anim, frame);
+  const struct mxm_header *h = M.h;
+  for (u32 j = 0; j < h->njoint; j++) {
+    const f32x4 *c = P.active && P.slot[j] >= 0 ? (const f32x4 *)P.mat[P.slot[j]]
+                                                 : (const f32x4 *)(mats + 4 * j);
+    jq[j][0] = c[0] * h->qsize, jq[j][1] = c[1] * h->qsize, jq[j][2] = c[2] * h->qsize;
+    jq[j][3] = c[0] * h->qoff[0] + c[1] * h->qoff[1] + c[2] * h->qoff[2] + c[3];
+    for (int k = 0; k < 3; k++)
+      je[j][k] = jq[j][k] * (1.0f / 32768.0f / 65536.0f);
+    je[j][3] = jq[j][3];
+  }
+  joints_frames++;
+}
+
+static const f32x4 (*pal_joints(u32 p))[4] {
+  if (jp_frame[p] != joints_frames) {
+    jp_frame[p] = joints_frames;
+    for (u32 k = 0; k < JOINTS; k++) {
+      const f32x4 *c = je[M.pal[p].joint[k < M.pal[p].n ? k : 0]];
+      jp[p][k][0] = c[0], jp[p][k][1] = c[1], jp[p][k][2] = c[2], jp[p][k][3] = c[3];
+    }
+  }
+  return jp[p];
+}
+
+/* The vertex loops of skin_run: one of each kind of vertex, without
+   branches, two vertices an iteration so that the EE has the second's work
+   to do while it waits for the first's results. Not software pipelined:
+   it is not faster here, and PCSX2's EE recompiler runs the pipelined loop
+   of one joint without normals wrong (docs/llvm-issues.md 13). */
+#define SKIN_LOOP _Pragma("clang loop unroll_count(2) pipeline(disable)")
+typedef s16 s16x8 __attribute__((vector_size(16)));
+typedef s8 s8x16 __attribute__((vector_size(16)));
+typedef u64 u64x2 __attribute__((vector_size(16)));
+/* RPOS q times 65536 (w: the next one's x): LDL, LDR, PEXTLH with 0 */
+MX_INLINE f32x4 skin_pos_in(const s16 *p) {
+  u64 v;
+  __builtin_memcpy(&v, p, 8);
+  s16x8 h = (s16x8)(u64x2){v, 0}, z = {0};
+  return __builtin_convertvector((s32x4)__builtin_shufflevector(z, h, 0, 8, 1, 9, 2, 10, 3, 11),
+                                 f32x4);
+}
+/* RNRM times 2^24 (skin_unit makes it 127 long): LW, PEXTLB and PEXTLH
+   with 0 */
+MX_INLINE f32x4 skin_nrm_in(const s8x4 *n) {
+  s8x16 b = (s8x16)(s32x4){*(const s32 *)n, 0, 0, 0}, z = {0};
+  s16x8 h = (s16x8)__builtin_shufflevector(z, b, 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22,
+                                           7, 23),
+        hz = {0};
+  return __builtin_convertvector((s32x4)__builtin_shufflevector(hz, h, 0, 8, 1, 9, 2, 10, 3, 11),
+                                 f32x4);
+}
+MX_INLINE s8x4 skin_nrm_out(f32x4 t) {
+  return __builtin_convertvector(__builtin_convertvector(t, s32x4), s8x4);
+}
+/* t at length 127 */
+MX_INLINE f32x4 skin_unit(f32x4 t) {
+  f32x4 t2 = t * t;
+  return t * (127.0f / __builtin_sqrtf(t2[0] + t2[1] + t2[2] + 1e-30f));
+}
+
+/* n vertices of the streams pos .. wgt by the joints pm of their palette
+   (jp) into op and on: the first n1 of one joint (the first slot's), the n2
+   after them of two (the first two slots'), the rest of up to four (a slot
+   of weight 0 is a slot of the palette too); normals: the normals too
+   (mflat has none). */
+MX_INLINE void skin_vertices(const s16 *__restrict pos, const s8x4 *__restrict nrm,
+                             const u32 *__restrict jnt, const u8x4 *__restrict wgt,
+                             const f32x4 (*__restrict pm)[4], f32x4 *__restrict op,
+                             s8x4 *__restrict on, u32 n1, u32 n2, u32 n, const int normals) {
+  u32 i = 0;
+  /* one joint: its matrix as it is (the normal made 127 long as in the
+     other loops: strip runs, not sorted, take theirs for all vertices) */
+  SKIN_LOOP
+  for (; i < n1; i++) {
+    const f32x4 *m = pm[jnt[i] & 255];
+    f32x4 p = skin_pos_in(pos + 3 * i);
+    f32x4 r = m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3];
+    op[i] = r;
+    if (normals) {
+      f32x4 nv = skin_nrm_in(nrm + i);
+      on[i] = skin_nrm_out(skin_unit(m[0] * nv[0] + m[1] * nv[1] + m[2] * nv[2]));
+    }
+  }
+  /* two: each column one sum of two products */
+  SKIN_LOOP
+  for (; i < n1 + n2; i++) {
+    u32 jb = jnt[i];
+    const f32x4 *a = pm[jb & 255], *b = pm[jb >> 8 & 255];
+    f32x4 w = __builtin_convertvector(wgt[i], f32x4) * (1.0f / 255.0f);
+    f32x4 c0 = a[0] * w[0] + b[0] * w[1], c1 = a[1] * w[0] + b[1] * w[1];
+    f32x4 c2 = a[2] * w[0] + b[2] * w[1], c3 = a[3] * w[0] + b[3] * w[1];
+    f32x4 p = skin_pos_in(pos + 3 * i);
+    f32x4 r = c0 * p[0] + c1 * p[1] + c2 * p[2] + c3;
+    op[i] = r;
+    if (normals) {
+      f32x4 nv = skin_nrm_in(nrm + i);
+      on[i] = skin_nrm_out(skin_unit(c0 * nv[0] + c1 * nv[1] + c2 * nv[2]));
+    }
+  }
+  /* up to four */
+  SKIN_LOOP
+  for (; i < n; i++) {
+    u32 jb = jnt[i];
+    const f32x4 *a = pm[jb & 255], *b = pm[jb >> 8 & 255];
+    const f32x4 *c = pm[jb >> 16 & 255], *d = pm[jb >> 24];
+    f32x4 w = __builtin_convertvector(wgt[i], f32x4) * (1.0f / 255.0f);
+    f32x4 c0 = a[0] * w[0] + b[0] * w[1] + c[0] * w[2] + d[0] * w[3];
+    f32x4 c1 = a[1] * w[0] + b[1] * w[1] + c[1] * w[2] + d[1] * w[3];
+    f32x4 c2 = a[2] * w[0] + b[2] * w[1] + c[2] * w[2] + d[2] * w[3];
+    f32x4 c3 = a[3] * w[0] + b[3] * w[1] + c[3] * w[2] + d[3] * w[3];
+    f32x4 p = skin_pos_in(pos + 3 * i);
+    f32x4 r = c0 * p[0] + c1 * p[1] + c2 * p[2] + c3;
+    op[i] = r;
+    if (normals) {
+      f32x4 nv = skin_nrm_in(nrm + i);
+      on[i] = skin_nrm_out(skin_unit(c0 * nv[0] + c1 * nv[1] + c2 * nv[2]));
+    }
+  }
+}
+/* Vertices first .. first + n - 1 of the cluster or strip streams, of
+   palette pal (skin_vertices: n1, n2). */
+static void skin_run(u32 first, u32 n1, u32 n2, u32 n, u32 pal, int strips, int normals) {
+  int o = strips ? MXM_SPOS - MXM_POS : 0;
+  const s16 *pos = (const s16 *)sec(MXM_RPOS + o) + 3 * first;
+  const s8x4 *nrm = (const s8x4 *)sec(MXM_RNRM + o) + first;
+  const u32 *jnt = (const u32 *)sec(MXM_JNT + o) + first;
+  const u8x4 *wgt = (const u8x4 *)sec(MXM_WGT + o) + first;
+  const f32x4(*pm)[4] = pal_joints(pal);
+  if (normals)
+    skin_vertices(pos, nrm, jnt, wgt, pm, skin_pos[skin_buf] + first, skin_nrm[skin_buf] + first,
+                  n1, n2, n, 1);
+  else
+    skin_vertices(pos, nrm, jnt, wgt, pm, skin_pos[skin_buf] + first, skin_nrm[skin_buf] + first,
+                  n1, n2, n, 0);
+}
+
+/* This frame's skinning (after mx_frame_begin and joints_frame), of the
+   layout drawn. */
+static void skin_frame(void) {
+  st_frame.skin = st_frame.skinned = 0;
+  if (!M.skinned || V.shader == S_SKIN)
+    return;
+  /* frame n - 2, which used this buffer, is done */
+  while (mx_frame_done() + 1 < mx_frame_number())
+    ;
+  skin_buf = (int)(mx_frame_number() & 1);
+  int rest = !animated(V.shader), layout = 1 + ix_now();
+  if (rest && skin_rest[skin_buf] == layout)
+    return;
+  skin_rest[skin_buf] = rest ? layout : 0;
+  u32 t0 = mx_count(), n;
+  int normals = rest || V.shader != S_FLAT;
+  n = 0;
+  if (ix_now()) {
+    for (u32 gi = 0; gi < ngrp[1]; gi++) {
+      const struct group *q = &grp[1][gi];
+      if (rest || (lod_need[q->mat & 0xFF] >> (q->mat >> 8) & 1)) {
+        for (u32 c = q->c; c < q->e; c++)
+          skin_run(M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, q->pal, 0, normals);
+        n += q->nv;
+      }
+    }
+    mx_dcache_writeback(skin_pos[skin_buf], M.h->nvert * 16);
+    if (normals)
+      mx_dcache_writeback(skin_nrm[skin_buf], M.h->nvert * 4);
+  } else {
+    for (u32 r = 0; r < M.h->nstrip; r++)
+      if (rest || (lod_need[M.strip[r].mat & 0xFF] >> (M.strip[r].mat >> 8) & 1)) {
+        skin_run(M.strip[r].first, 0, 0, M.strip[r].n, M.strip[r].pal, 1, normals);
+        n += M.strip[r].n;
+      }
+    mx_dcache_writeback(skin_pos[skin_buf], M.h->nsvert * 16);
+    if (normals)
+      mx_dcache_writeback(skin_nrm[skin_buf], M.h->nsvert * 4);
+  }
+  st_frame.skin = mx_count() - t0, st_frame.skinned = n;
+}
+
+/* The streams of a shader's inputs; strips: the S* streams. */
+static void streams_of(int shader, int strips, const void **st) {
+  int o = strips ? MXM_SPOS - MXM_POS : 0;
+  int k = 0;
+  if (shader == S_SKIN) {
+    st[k++] = sec(MXM_RPOS + o), st[k++] = sec(MXM_RNRM + o), st[k++] = sec(MXM_UV + o);
+    st[k++] = sec(MXM_JNT + o), st[k++] = sec(MXM_WGT + o);
+    return;
+  }
+  int sk = M.skinned; /* skin_frame's */
+  st[k++] = sk ? (const void *)skin_pos[skin_buf] : sec(MXM_POS + o);
+  if (shader >= S_LIT)
+    st[k++] = sk ? (const void *)skin_nrm[skin_buf] : sec(MXM_NRM + o);
+  if (shader >= S_TEX)
+    st[k++] = sec(MXM_UV + o);
+}
+
 /* Whether all of cluster c is in front of the view and inside the guard band
    (mvp as mvp_of makes it; mats: the joint matrices of the skinned
    programs, else 0). Its sphere moves with its joint, made bigger: its other
    joints move its vertices a little differently. */
+/* The level of each material of a copy (mvp as mvp_of makes it) into sel,
+   and into lod_need. */
+static void lod_choose(const float mvp[4][4], u8 *sel) {
+  float k = R / M.h->radius;
+  for (u32 mt = 0; mt < M.h->nmat; mt++) {
+    int l = lod_force;
+    if (l < 0) {
+      const float *c = part[mt];
+      float depth = mvp[0][3] * c[0] + mvp[1][3] * c[1] + mvp[2][3] * c[2] + mvp[3][3];
+      float r = c[3] * k, rpx = depth > r ? r * FY / depth : lod_r0;
+      l = 0;
+      for (float lim = lod_r0 * 0.5f; rpx < lim && l < 15; lim *= 0.5f)
+        l++;
+    }
+    sel[mt] = (u8)(l < (int)nlod ? l : (int)nlod - 1);
+    lod_need[mt] |= (u16)(1u << sel[mt]);
+  }
+}
+
 static int cluster_inside(u32 c, const float mvp[4][4], const float (*mats)[4]) {
   const float *sp = M.cl[c].sphere;
   float p[3] = {sp[0], sp[1], sp[2]}, r = sp[3];
@@ -727,6 +1156,40 @@ static int cluster_inside(u32 c, const float mvp[4][4], const float (*mats)[4]) 
   return z > NEAR_Z && (x + rw) * FX < GUARD * z && (y + rw) * FY < GUARD * z;
 }
 
+/* The uniforms of mscei and msceic (in uni after the MVP): the MVP without
+   the screen offset (it adds it: prm), and its z of the guard band's size:
+   t.z = Z_K (ZK / depth - ZK / 2), GUARD at depth 1 (NEAR_Z), -GUARD far
+   away; the GS's z is t.z / Z_K + ZK / 2 (scl, prm). The key light (light,
+   model space, as the other shaders), a fill from the other side and a rim
+   light from behind, each modulating the texture (128 = 1.0). */
+#define Z_K (GUARD / (ZK / 2))
+static void scei_uniforms(const float mvp[4][4], const float light[3]) {
+  for (int j = 0; j < 4; j++) {
+    uni[j][0] = mvp[j][0] - 2048 * mvp[j][3];
+    uni[j][1] = mvp[j][1] - 2048 * mvp[j][3];
+    uni[j][2] = -Z_K * (ZK / 2) * mvp[j][3] + (j == 3 ? Z_K * ZK : 0);
+  }
+  static const float fill_w[3] = {-0.62f, 0.25f, -0.74f}, rim_w[3] = {0.0f, -0.42f, -0.91f};
+  float fill[3], rim[3];
+  turn_back(fill_w, fill);
+  turn_back(rim_w, rim);
+  const float *dir[3] = {light, fill, rim};
+  static const float strength[3] = {0.72f, 0.30f, 0.22f};
+  for (int k = 0; k < 3; k++) {
+    for (int i = 0; i < 3; i++) {
+      uni[VU_IX_MSCEI_A + k][i] = dir[i][k] / 127.0f;
+      uni[VU_IX_MSCEI_E + i][k] = 128.0f * strength[i];
+    }
+    uni[VU_IX_MSCEI_A + k][3] = uni[VU_IX_MSCEI_E + k][3] = 0;
+    uni[VU_IX_MSCEI_AMB][k] = 128.0f * 0.26f;
+    uni[VU_IX_MSCEI_SCL][k] = k == 2 ? 1 / Z_K : 1;
+    uni[VU_IX_MSCEI_PRM][k] = k == 2 ? ZK / 2 : 2048;
+  }
+  uni[VU_IX_MSCEI_AMB][3] = 0; /* no highlight (TFX HIGHLIGHT2 adds the alpha) */
+  uni[VU_IX_MSCEI_PRM][3] = GUARD;
+  uni[VU_IX_MSCEI_SCL][3] = 0;
+}
+
 /* The uniforms of shader for material m, palette p, frame of the
    animation. */
 static void set_uniforms(int shader, const float mvp[4][4], const float light[3],
@@ -739,6 +1202,10 @@ static void set_uniforms(int shader, const float mvp[4][4], const float light[3]
     for (int k = 0; k < 3; k++)
       uni[VU_IX_MFLAT_COL][k] = (float)col[k];
     uni[VU_IX_MFLAT_COL][3] = 128;
+    return;
+  }
+  if (shader == S_SCEI || shader == S_SCEIC) {
+    scei_uniforms(mvp, light);
     return;
   }
   /* lit: the light's colour and the ambient light, of the material's colour
@@ -760,16 +1227,12 @@ static void set_uniforms(int shader, const float mvp[4][4], const float light[3]
   uni[VU_IX_MLIT_EYE][3] = (float)M.mat[m].color[3];
   if (shader != S_SKIN)
     return;
-  const float(*mats)[4] = anim_mats(frame);
+  (void)frame;
   const struct mxm_pal *pl = &M.pal[p];
-  for (u32 j = 0; j < pl->n; j++) {
-    u32 jn = pl->joint[j];
-    const float(*src)[4] =
-        P.active && P.slot[jn] >= 0 ? (const float(*)[4])P.mat[P.slot[jn]] : mats + 4 * jn;
+  for (u32 j = 0; j < pl->n; j++)
     for (int c = 0; c < 4; c++)
       for (int k = 0; k < 4; k++)
-        uni[VU_IX_MSKIN_JOINT + 4 * j + c][k] = src[c][k];
-  }
+        uni[VU_IX_MSKIN_JOINT + 4 * j + c][k] = jq[pl->joint[j]][c][k];
 }
 
 _Static_assert(VU_IX_MLIT_LIGHT == VU_IX_MTEX_LIGHT && VU_IX_MLIT_LIGHT == VU_IX_MSKIN_LIGHT &&
@@ -777,77 +1240,76 @@ _Static_assert(VU_IX_MLIT_LIGHT == VU_IX_MTEX_LIGHT && VU_IX_MLIT_LIGHT == VU_IX
                    VU_IX_MLIT_EYE == VU_IX_MTEX_EYE && VU_IX_MLIT_EYE == VU_IX_MSKIN_EYE,
                "the lit shaders share the uniforms' places");
 
-static void draw_copy(float ox, float oz, u32 frame) {
+static void draw_copy(float ox, float oz, u32 frame, const u8 *lod) {
   int shader = V.shader, tex = shader >= S_TEX;
   float m[4][4], light[3], eye[3];
   mvp_of(m, ox, oz, light, eye);
-  const struct mx_shader *s = &sh[shader][V.indexed];
+  const struct mx_shader *s = &(M.skinned && shader != S_SKIN ? sh_ee : sh)[shader][ix_now()];
   /* AA1 only where nothing is blended */
   u32 prim_solid = (u32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, tex, 0, aa1, aa1, 0, 0, 0);
   u32 prim_blend = (u32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, tex, 0, 1, 0, 0, 0, 0);
   int npass = tex ? P_N : 1;
   const void *st[6];
-  if (V.indexed) {
+  if (ix_now()) {
     streams_of(shader, 0, st);
     struct mx_ibatch *b = ibatch[s->out_qw == 3];
     /* the clusters drawn, when some may be outside the guard band */
     static struct mx_ibatch in[MAX_CLUSTER];
     /* flying, the model need not be all inside the guard band */
     int cull = fly;
-    const float(*mats)[4] = shader == S_SKIN ? anim_mats(frame) : 0;
+    const float(*mats)[4] = animated(shader) ? anim_mats(frame) : 0;
+    /* the clusters of one material and level (and palette: mskin), one draw */
+    const struct group *g = grp[shader == S_SKIN];
     for (int pass = 0; pass < npass; pass++)
-      for (u32 c = 0; c < M.h->ncluster;) {
-        /* the clusters of one material and palette, one draw */
-        u32 e = c + 1;
-        while (e < M.h->ncluster && M.cl[e].mat == M.cl[c].mat &&
-               (shader != S_SKIN || M.cl[e].pal == M.cl[c].pal))
-          e++;
-        u32 mat = M.cl[c].mat, n = 0;
-        if ((pass != P_SOLID) != (tex && blended(mat))) {
-          c = e;
+      for (u32 gi = 0; gi < ngrp[shader == S_SKIN]; gi++) {
+        const struct group *q = &g[gi];
+        u32 mat = q->mat & 0xFFu, n = 0;
+        if ((pass != P_SOLID) != (tex && blended(mat)) || q->mat >> 8 != lod[mat])
           continue;
+        if (cull) {
+          for (u32 k = q->c; k < q->e; k++)
+            if (cluster_inside(k, m, mats)) {
+              in[n++] = b[k];
+              st_frame.verts += M.cl[k].nv, st_frame.indices += M.cl[k].ni;
+              st_frame.tris += pass == P_EDGE ? 0 : cl_tris[k];
+            }
+        } else {
+          n = q->e - q->c;
+          st_frame.verts += q->nv, st_frame.indices += q->ni;
+          st_frame.tris += pass == P_EDGE ? 0 : q->tris;
         }
-        for (u32 k = c; k < e; k++) {
-          if (cull && !cluster_inside(k, m, mats))
-            continue;
-          if (cull)
-            in[n] = b[k];
-          n++;
-          st_frame.verts += M.cl[k].nv, st_frame.indices += M.cl[k].ni;
-          st_frame.tris += pass == P_EDGE ? 0 : cl_tris[k];
-        }
-        const struct mx_ibatch *draw = cull ? in : b + c;
         if (n) {
           if (tex && (mat | (u32)pass << 8) != cur_mat)
             gs_state(mat, pass);
           bind(s);
-          set_uniforms(shader, m, light, eye, mat, M.cl[c].pal, frame);
+          set_uniforms(shader, m, light, eye, mat, q->pal, frame);
           mx_dcache_writeback(uni, sizeof uni);
-          mx_frame_shader_idraw(s, pass ? prim_blend : prim_solid, uni, st, draw, n);
+          mx_frame_shader_idraw(s, pass ? prim_blend : prim_solid, uni, st, cull ? in : b + q->c,
+                                n);
           st_frame.draws++;
         }
-        c = e;
       }
   } else {
     streams_of(shader, 1, st);
     for (int pass = 0; pass < npass; pass++)
       for (u32 r = 0; r < M.h->nstrip; r++) {
         const struct mxm_strip *sr = &M.strip[r];
-        if ((pass != P_SOLID) != (tex && blended(sr->mat)))
+        u32 mat = sr->mat & 0xFF;
+        if ((pass != P_SOLID) != (tex && blended(mat)) || sr->mat >> 8 != lod[mat])
           continue;
         const void *at[6];
         for (u32 i = 0; i < s->nin; i++)
           at[i] = (const u8 *)st[i] + sr->first * s->in[i].bytes;
-        if (tex && (sr->mat | (u32)pass << 8) != cur_mat)
-          gs_state(sr->mat, pass);
+        if (tex && (mat | (u32)pass << 8) != cur_mat)
+          gs_state(mat, pass);
         bind(s);
-        set_uniforms(shader, m, light, eye, sr->mat, sr->pal, frame);
+        set_uniforms(shader, m, light, eye, mat, sr->pal, frame);
         mx_dcache_writeback(uni, sizeof uni);
         mx_frame_shader_draw(s, pass ? prim_blend : prim_solid, uni, at, sr->n);
         st_frame.verts += strip_cost(s, sr->n), st_frame.indices += sr->n;
+        st_frame.tris += pass == P_EDGE ? 0 : run_tris[r];
         st_frame.draws++;
       }
-    st_frame.tris += M.h->ntri;
   }
 }
 
@@ -870,13 +1332,24 @@ static void frame(float t) {
   }
   cur_mat = ~0u;
   u32 af = 0;
-  if (V.shader == S_SKIN)
+  if (animated(V.shader))
     af = (u32)(s32)(t * M.anim[V.anim].fps);
   phys_update(af, t);
   float step = 2.4f * R, o = -step * itof(V.copies - 1) * 0.5f;
+  for (u32 mt = 0; mt < M.h->nmat; mt++)
+    lod_need[mt] = 0;
+  for (int z = 0; z < V.copies; z++)
+    for (int x = 0; x < V.copies; x++) {
+      float mvp[4][4], light[3], eye[3];
+      mvp_of(mvp, o + step * itof(x), o + step * itof(z), light, eye);
+      lod_choose(mvp, lod_sel[z * V.copies + x]);
+    }
+  if (M.skinned)
+    joints_frame(animated(V.shader) ? (u32)V.anim : 0, af);
+  skin_frame();
   for (int z = 0; z < V.copies; z++)
     for (int x = 0; x < V.copies; x++)
-      draw_copy(o + step * itof(x), o + step * itof(z), af);
+      draw_copy(o + step * itof(x), o + step * itof(z), af, lod_sel[z * V.copies + x]);
   mx_frame_commit(mx_e_cnt(mx_frame_reserve(1), 0, mx_vif_flush(), 0));
   for (int l = 0; l < 3; l++)
     hud_text(8, 6 + 9 * (u32)l, hud[l]);
@@ -902,17 +1375,25 @@ static void hud_mode(char *p) {
   p = hud_cat(p, M.name);
   p = hud_cat(p, "  ");
   p = hud_cat(p, shader_names[V.shader]);
-  p = hud_cat(p, V.indexed ? "  INDEXED  " : "  STRIPS  ");
+  p = hud_cat(p, ix_now() ? "  INDEXED  " : "  STRIPS  ");
   p = hud_u(p, (u32)(V.copies * V.copies));
   p = hud_cat(p, V.copies > 1 ? " COPIES" : " COPY");
   if (P.active)
     p = hud_cat(p, "  PHYS");
+  if (flyby)
+    p = hud_cat(p, "  FLYBY");
   if (aa1)
     p = hud_cat(p, "  AA1");
   if (mx_gs.smooth)
     p = hud_cat(p, "  SOFT");
-  if (V.shader == S_SKIN) {
-    p = hud_cat(p, "  ");
+  if (nlod > 1) {
+    /* the level of each material (of the first copy) */
+    p = hud_cat(p, "  LOD ");
+    for (u32 mt = 0; mt < M.h->nmat; mt++)
+      *p++ = (char)('0' + lod_sel[0][mt]), *p = 0;
+  }
+  if (animated(V.shader)) {
+    p = hud_cat(p, V.shader == S_SKIN ? "  " : "  EE SKIN  ");
     char nm[17];
     for (int i = 0; i < 16; i++) {
       char ch = M.anim[V.anim].name[i];
@@ -928,7 +1409,7 @@ static void hud_counts(char *p) {
   p = hud_u(p, st_frame.verts);
   p = hud_cat(p, " VU1 VERTICES  ");
   p = hud_u(p, st_frame.indices);
-  hud_cat(p, V.indexed ? " INDICES" : " STRIP");
+  hud_cat(p, ix_now() ? " INDICES" : " STRIP");
 }
 
 /* The busy shares of the sampler (since mx_trace_sample was started). */
@@ -938,7 +1419,9 @@ static void busy(u32 *vu1, u32 *path, u32 *gs) {
 }
 
 struct result {
-  u32 shader, indexed, frames, cycles, tris, verts, indices, vu1, path, gs, ee;
+  u32 shader, indexed, frames, tris, verts, indices, vu1, path, gs, ee;
+  u64 cycles; /* a slow run is longer than the 32-bit Count's 14.6 s */
+  u32 skin, skinned; /* of the last frame */
 };
 static struct result results[2 * S_N];
 static u32 nresults;
@@ -946,11 +1429,16 @@ static u32 nresults;
 static void report(const struct result *r) {
   u32 fps10 = (u32)((u64)r->frames * MX_EE_HZ * 10 / r->cycles);
   u64 per_s = (u64)MX_EE_HZ * r->frames / r->cycles;
-  mx_printf("model bench %-5s %-7s: %u.%u fps, %u triangles/s, %u VU1 vertices/s, %u %s/s; "
+  mx_printf("model bench %-6s %-7s: %u.%u fps, %u triangles/s, %u VU1 vertices/s, %u %s/s; "
             "VU1 %u%% PATH %u%% GS %u%% EE %u%%\n",
             shader_names[r->shader], r->indexed ? "indexed" : "strips", fps10 / 10, fps10 % 10,
             (u32)(r->tris * per_s), (u32)(r->verts * per_s), (u32)(r->indices * per_s),
             r->indexed ? "indices" : "strip vertices", r->vu1, r->path, r->gs, r->ee);
+  if (r->skinned)
+    mx_printf("model bench %-6s %-7s: EE skin %u.%u ms a frame, %u vertices, %u cycles a vertex\n",
+              shader_names[r->shader], r->indexed ? "indexed" : "strips",
+              (u32)((u64)r->skin * 10000 / MX_EE_HZ / 10), (u32)((u64)r->skin * 10000 / MX_EE_HZ % 10),
+              r->skinned, r->skin / r->skinned);
 }
 
 static int want_interactive;
@@ -961,7 +1449,8 @@ static void bench(int shader, int indexed) {
   mx_frame_vsync(0);
   u32 waits0 = mx_frame_stats.wait_buffer + mx_frame_stats.wait_ring;
   mx_trace_sample(1000);
-  u32 t0 = mx_count(), f0 = mx_gs.frames, v0 = mx_gs.vsync;
+  u32 last = mx_count(), f0 = mx_gs.frames, v0 = mx_gs.vsync;
+  u64 cycles = 0;
   for (u32 f = 0; f < BENCH_FRAMES; f++) {
     if (pad_pressed() & MX_PAD_START)
       want_interactive = 1;
@@ -970,18 +1459,21 @@ static void bench(int shader, int indexed) {
       hud_mode(hud[0]);
       hud_counts(hud[1]);
     }
+    u32 now = mx_count();
+    cycles += now - last, last = now;
   }
   u32 d0 = mx_count();
   while (mx_gs.frames_done < f0 + BENCH_FRAMES && mx_count() - d0 < 300000000u)
     ;
   struct result *r = &results[nresults++];
   r->shader = (u32)shader, r->indexed = (u32)indexed, r->frames = BENCH_FRAMES;
-  r->cycles = mx_count() - t0;
+  r->cycles = cycles + (mx_count() - last);
   r->tris = st_frame.tris, r->verts = st_frame.verts, r->indices = st_frame.indices;
+  r->skin = st_frame.skin, r->skinned = st_frame.skinned;
   busy(&r->vu1, &r->path, &r->gs);
   mx_trace_sample(0);
   u32 w = mx_frame_stats.wait_buffer + mx_frame_stats.wait_ring - waits0;
-  r->ee = w < r->cycles ? (u32)((u64)(r->cycles - w) * 100 / r->cycles) : 0;
+  r->ee = w < r->cycles ? (u32)((r->cycles - w) * 100 / r->cycles) : 0;
   report(r);
   char *p = hud[2];
   p = hud_cat(p, "LAST: ");
@@ -1040,8 +1532,10 @@ static int same_pictures(int nshader) {
   }
   mx_frame_vsync(1);
   V.copies = copies(2), V.spin = 0.7f, V.dist = min_dist();
+  _Static_assert(S_SCEIC == S_SCEI + 1, "msceic is compared with the mscei strips before it");
   for (int s = 0; s < nshader; s++) {
-    for (int ix = 0; ix < 2; ix++) {
+    /* msceic: its strips (in line_hash[1]) against mscei's (line_hash[0]) */
+    for (int ix = !has_ix(s); ix < 2; ix++) {
       V.shader = s, V.indexed = ix;
       hud[0][0] = hud[1][0] = hud[2][0] = 0;
       frame(0.25f);
@@ -1054,12 +1548,13 @@ static int same_pictures(int nshader) {
     for (u32 y = 0; y < SH; y++)
       if (line_hash[0][y] != line_hash[1][y] && !diff++)
         first = y;
+    const char *other = has_ix(s) ? "indexed" : shader_names[S_SCEI];
     if (diff) {
-      mx_printf("model: %s strips and indexed differ in %u lines (the first %u)\n",
-                shader_names[s], diff, first);
+      mx_printf("model: %s strips and %s differ in %u lines (the first %u)\n", shader_names[s],
+                other, diff, first);
       fail = 1;
     } else {
-      mx_printf("model: %s strips and indexed: the same picture\n", shader_names[s]);
+      mx_printf("model: %s strips and %s: the same picture\n", shader_names[s], other);
     }
   }
   return fail;
@@ -1068,11 +1563,31 @@ static int same_pictures(int nshader) {
 /* Model i of models: opened (its textures uploaded, the HUD's after them),
    the view made right for it. Returns the number of its shaders, or -1. */
 static int use_model(u32 i) {
-  static const struct mx_shader *const ix[S_N] = {&sh[0][1], &sh[1][1], &sh[2][1], &sh[3][1]};
-  if (model_open(models[i].base, models[i].size, ix, S_N) < 0)
+  const struct mx_shader *ix[S_N];
+  u32 nix = 0;
+  for (int s = 0; s < S_N; s++)
+    if (has_ix(s))
+      ix[nix++] = &sh[s][1];
+  if (model_open(models[i].base, models[i].size, ix, nix) < 0)
     return -1;
   M.name = models[i].name, cur_model = i;
   int skinned = (M.h->flags & MXM_SKINNED) && M.h->nanim && M.h->npal;
+  M.skinned = skinned;
+  /* the EE skins it for the programs but mskin (it has no rest pose
+     streams): the bind pose of both layouts there, room for it, the joint
+     matrices of the animations aligned for LQC2 */
+  M.ee_skin = skinned && M.h->nvert <= MAX_SKIN && M.h->nsvert <= MAX_SKIN;
+  for (int s = MXM_RPOS; s <= MXM_WGT; s++)
+    M.ee_skin &= !M.h->nvert || M.h->off[s];
+  for (int s = MXM_SRPOS; s <= MXM_SWGT; s++)
+    M.ee_skin &= !M.h->nsvert || M.h->off[s];
+  for (u32 a = 0; a < M.h->nanim; a++)
+    M.ee_skin &= M.anim[a].mat % 16 == 0;
+  if (skinned && !M.ee_skin) {
+    mx_printf("model: the EE cannot skin it (%u, %u vertices)\n", M.h->nvert, M.h->nsvert);
+    return -1;
+  }
+  skin_rest[0] = skin_rest[1] = 0;
   mx_printf("model: %s: %u triangles, %u clusters, %u vertices in clusters, %u in strips, %u "
             "materials, %u joints, %u animations\n",
             M.name, M.h->ntri, M.h->ncluster, M.h->nvert, M.h->nsvert, M.h->nmat, M.h->njoint,
@@ -1096,17 +1611,22 @@ static int use_model(u32 i) {
 static void interactive(int nshader) {
   mx_printf("model: interactive (SELECT + START ends)\n");
   mx_frame_vsync(V.vsync = 1);
-  V.copies = 1, V.turning = 0;
+  V.copies = 1, V.turning = 0, V.shader = S_SCEI;
   view_reset();
-  u32 v0 = mx_gs.vsync, n = 0, tp = mx_count(), fp = mx_gs.frames;
+  flyby = 1;
+  u32 v0 = mx_gs.vsync, n = 0, tp = mx_count(), fp = mx_gs.frames, fv = v0;
+  float yaw0 = V.yaw;
   u64 tri = 0, vert = 0;
   mx_trace_sample(1000);
   for (;;) {
     u32 b = pad_pressed(), held = mx_pad_buttons(0);
     if ((held & (MX_PAD_SELECT | MX_PAD_START)) == (MX_PAD_SELECT | MX_PAD_START))
       break;
-    if (b & MX_PAD_SQUARE)
+    if (b & MX_PAD_SQUARE) {
       V.shader = (V.shader + 1) % nshader;
+      if (V.shader == S_SCEIC && !has_layout(0)) /* it draws strips */
+        V.shader = (V.shader + 1) % nshader;
+    }
     if ((b & MX_PAD_CROSS) && has_layout(!V.indexed)) {
       V.indexed ^= 1;
       view_reset(); /* strips: around the model */
@@ -1145,8 +1665,10 @@ static void interactive(int nshader) {
       V.turning ^= 1;
     if (b & MX_PAD_R2)
       mx_frame_vsync(V.vsync ^= 1);
-    if (b & MX_PAD_L3)
+    if (b & MX_PAD_L3) {
       view_reset();
+      flyby = 1, fv = mx_gs.vsync, yaw0 = V.yaw;
+    }
     if (b & MX_PAD_R3) {
       int m = (aa1 | mx_gs.smooth << 1) + 1;
       aa1 = m & 1;
@@ -1167,6 +1689,20 @@ static void interactive(int nshader) {
       ly = -1;
     if (held & MX_PAD_DOWN)
       ly = 1;
+    if (flyby && (lx != 0 || ly != 0 || rx != 0 || ry != 0 || (held & (MX_PAD_R1 | MX_PAD_L1)))) {
+      /* the pad takes over, from where the camera is (indexed: walking) */
+      flyby = 0;
+      fly = V.indexed;
+      fly_c[0] = cam_c[0], fly_c[1] = cam_c[1], fly_c[2] = cam_c[2];
+    }
+    if (flyby) {
+      /* around in 20 s; up and down, near and far, slower and out of step */
+      float ft = itof((s32)(mx_gs.vsync - fv)) / 60;
+      V.yaw = yaw0 + ft * 0.314f;
+      V.pitch = 0.2f + 0.2f * sinf_(ft * 0.23f);
+      V.dist = min_dist() * (1.6f + 0.6f * sinf_(ft * 0.17f));
+      fly = 0;
+    }
     /* as Fortnite: the right stick looks (up looks up), the left one walks
        (forwards and back, sideways: on the ground, at the eye's height) */
     V.yaw -= rx * 0.045f;
@@ -1212,10 +1748,10 @@ static void interactive(int nshader) {
 #ifndef MODEL_RECORD_COPIES
 #define MODEL_RECORD_COPIES 1
 #endif
-static void record(int skinned) {
+static void record(void) {
   mx_frame_vsync(1);
   V.copies = copies(MODEL_RECORD_COPIES), V.indexed = has_layout(1);
-  V.shader = skinned ? S_SKIN : S_TEX;
+  V.shader = S_SCEI;
   V.dist = 0;
   /* one: close; copies: the square of them about as wide as the screen */
   V.dist = V.copies > 1 ? 2.0f * grid_radius() : 1.6f * min_dist();
@@ -1259,8 +1795,16 @@ int main(int argc, char **argv) {
   sh[S_LIT][1] = MX_VU_ISHADER(IX_MLIT, mlit_ix_vu, mlit_ix_vu_end);
   sh[S_TEX][0] = MX_VU_SHADER(MTEX, mtex_vu, mtex_vu_end);
   sh[S_TEX][1] = MX_VU_ISHADER(IX_MTEX, mtex_ix_vu, mtex_ix_vu_end);
+  sh[S_SCEI][0] = MX_VU_SHADER(MSCEI, mscei_vu, mscei_vu_end);
+  sh[S_SCEI][1] = MX_VU_ISHADER(IX_MSCEI, mscei_ix_vu, mscei_ix_vu_end);
+  sh[S_SCEIC][0] = MX_VU_SHADER(MSCEIC, msceic_vu, msceic_vu_end);
   sh[S_SKIN][0] = MX_VU_SHADER(MSKIN, mskin_vu, mskin_vu_end);
   sh[S_SKIN][1] = MX_VU_ISHADER(IX_MSKIN, mskin_ix_vu, mskin_ix_vu_end);
+  for (int s = 0; s < S_N; s++)
+    for (int k = 0; k < 2; k++) {
+      sh_ee[s][k] = sh[s][k];
+      sh_ee[s][k].in[0].fmt = MX_UNPACK_V4_32, sh_ee[s][k].in[0].bytes = 16;
+    }
 
   /* the models: from the host, else the one built in */
   u32 used = 0;
@@ -1271,6 +1815,18 @@ int main(int argc, char **argv) {
     }
     if (!strcmp_(argv[a], "-nophys")) {
       phys_off = 1;
+      continue;
+    }
+    if (!strcmp_(argv[a], "-lod") && a + 1 < argc) {
+      lod_force = (int)atou_(argv[++a]);
+      continue;
+    }
+    if (!strcmp_(argv[a], "-lodr") && a + 1 < argc) {
+      lod_r0 = itof((s32)atou_(argv[++a]));
+      continue;
+    }
+    if (!strcmp_(argv[a], "-static")) {
+      static_pose = 1;
       continue;
     }
     if (!strcmp_(argv[a], "-cutout")) {
@@ -1301,11 +1857,10 @@ int main(int argc, char **argv) {
     MX_TEST_END(1);
     return 1;
   }
-  int skinned = nshader == S_N;
   if (mx_pad_init() < 0)
     mx_printf("model: no pad driver\n");
 #ifdef MODEL_RECORD
-  record(skinned);
+  record();
   mx_frame_stop();
   MX_TEST_END(0);
   return 0;
@@ -1317,22 +1872,33 @@ int main(int argc, char **argv) {
   V.copies = copies(BENCH_COPIES), V.spin = 0.3f, V.dist = 1.15f * min_dist();
   for (int s = 0; s < nshader && !want_interactive; s++)
     for (int i = 0; i < 2 && !want_interactive; i++)
-      if (has_layout(i))
+      if (has_layout(i) && (!i || has_ix(s)))
         bench(s, i);
   if (!want_interactive) {
     mx_printf("model bench: %u x %u copies of %u triangles\n", (u32)V.copies, (u32)V.copies,
               M.h->ntri);
-    for (u32 i = 0; i < nresults && has_layout(0) && has_layout(1); i += 2)
-      if (i + 1 < nresults)
-        mx_printf("model bench %-5s: indexed / strips: %u%% of the time, %u%% of the VU1 "
+    for (u32 i = 0; i + 1 < nresults; i++)
+      if (results[i].shader == results[i + 1].shader)
+        mx_printf("model bench %-6s: indexed / strips: %u%% of the time, %u%% of the VU1 "
                   "vertices\n",
                   shader_names[results[i].shader],
-                  results[i].cycles ? (u32)((u64)results[i + 1].cycles * 100 / results[i].cycles)
+                  results[i].cycles ? (u32)(results[i + 1].cycles * 100 / results[i].cycles)
                                     : 0,
                   results[i].verts ? results[i + 1].verts * 100 / results[i].verts : 0);
+    /* the strips of msceic and mscei: what the clipping costs */
+    const struct result *nc = 0, *cl = 0;
+    for (u32 i = 0; i < nresults; i++)
+      if (!results[i].indexed && results[i].shader == S_SCEI)
+        nc = &results[i];
+      else if (!results[i].indexed && results[i].shader == S_SCEIC)
+        cl = &results[i];
+    if (nc && cl && nc->cycles)
+      mx_printf("model bench %-6s: clipped / not (%s strips): %u%% of the time\n",
+                shader_names[S_SCEIC], shader_names[S_SCEI],
+                (u32)(cl->cycles * 100 / nc->cycles));
     /* a picture of the view */
     mx_frame_vsync(1);
-    V.copies = 1, V.shader = skinned ? S_SKIN : S_TEX, V.indexed = has_layout(1), V.dist = 0;
+    V.copies = 1, V.shader = S_SCEI, V.indexed = has_layout(1), V.dist = 0;
     V.dist = 2.2f * min_dist();
     hud[2][0] = 0;
     for (int i = 0; i < 4; i++) {

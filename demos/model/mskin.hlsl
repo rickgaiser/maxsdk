@@ -1,7 +1,9 @@
 // Model demo: mtex with skinning. Each vertex has up to four joints (V4-8U:
 // slots of the draw's palette) and their weights (V4-8U, summing to 255);
 // the joint matrices are blended by the weights and transform the position
-// and the normal from the bind pose into model space.
+// and the normal from the bind pose into model space. The position is V3-16,
+// 1 / 32768 of the model's size from its middle (demos/model/mxm.h): the
+// joint matrices have the size and the middle folded in.
 #include "vu.hlsli"
 
 // The light of a surface turned by n.l from it (-1 .. 1), wrapped around
@@ -35,7 +37,7 @@ cbuffer Uniforms {
 };
 
 struct In {
-    float3 pos : POSITION;
+    int4 pos : POSITION_V3_16;
     int4 nrm : NORMAL_V4_8;
     int2 uv : TEXCOORD_V2_16;
     uint4 jnt : JOINTS_V4_8U;
@@ -57,7 +59,8 @@ Out mskin(In v) {
     float4 c2 = joint[j.x + 2] * w.x + joint[j.y + 2] * w.y + joint[j.z + 2] * w.z + joint[j.w + 2] * w.w;
     float4 c3 = joint[j.x + 3] * w.x + joint[j.y + 3] * w.y + joint[j.z + 3] * w.z + joint[j.w + 3] * w.w;
     float4 nrm = float4(v.nrm);
-    float4 m = c0 * v.pos.x + c1 * v.pos.y + c2 * v.pos.z + c3;
+    float4 pos = vu::itof15(v.pos);
+    float4 m = c0 * pos.x + c1 * pos.y + c2 * pos.z + c3;
     float3 n = (c0 * nrm.x + c1 * nrm.y + c2 * nrm.z).xyz;
     float4 p = mul(mvp, float4(m.xyz, 1));
     float q = rcp(p.w);

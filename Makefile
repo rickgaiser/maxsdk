@@ -69,7 +69,7 @@ $(OUT)/vu/%.o: $(OUT)/vu/%.bin
 # (e.g. -vu-contexts=1).
 VU_OPT_FLAGS ?=
 HLSLS     := $(wildcard $(HERE)/tests/ps2/*.hlsl $(HERE)/demos/*/*.hlsl)
-HLSL_IX   := lvl0 lvl1 lvl2 mflat mlit mtex mskin
+HLSL_IX   := lvl0 lvl1 lvl2 mflat mlit mtex mscei mskin
 IX_N      := 32
 HLSL_NAMES = $(basename $(notdir $(HLSLS))) $(addsuffix _ix,$(HLSL_IX))
 HLSL_OBJS := $(patsubst %,$(OUT)/hlsl/%.o,$(HLSL_NAMES))
@@ -164,8 +164,10 @@ $(OUT)/demos/%.elf: %.c $$(DEMO_OBJS_$$*) $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS)
 
 # The model demo's model, built in (tools/model/gltf2mxm.py: Python 3 and
 # Pillow), made for the indexed programs it draws with.
-MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mskin)
+MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mscei mskin)
 DEMO_OBJS_model := $(OUT)/demos/model/fox_mxm.o
+# model.c: VU0 macro mode; approximate functions for VRSQRT (the skinning's normals)
+$(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf: CFLAGS += -mvu0 -fapprox-func
 
 $(OUT)/demos/model/fox.mxm: $(HERE)/demos/model/assets/Fox.glb $(HERE)/tools/model/gltf2mxm.py \
                             $(MODEL_IX)

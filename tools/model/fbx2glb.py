@@ -3,7 +3,9 @@
     blender -b --factory-startup -P fbx2glb.py -- in.fbx out.glb [options]
 
 The meshes are decimated to about --tris triangles (in proportion, or
---ratio name=r for a mesh whose name contains name), the textures are found
+--ratio name=r for a mesh whose name contains name); --lods n: each mesh n
+times, as <name>_LOD0 .. _LOD<n-1>, level k decimated to 2^-k of that (for
+gltf2mxm.py: the levels of detail of one model), the textures are found
 again by their file names under --textures (FBX files often hold the paths
 of the machine they were made on) and scaled down to --tex-size, and the
 action of --anim (an FBX of the same skeleton) is put on the armature: its
@@ -54,6 +56,8 @@ def main():
     ap.add_argument("--tris", type=int, default=25000, help="triangles of the model")
     ap.add_argument("--ratio", action="append", default=[], metavar="NAME=R",
                     help="decimate ratio of the meshes whose name contains NAME")
+    ap.add_argument("--lods", type=int, default=1,
+                    help="levels of detail: each mesh n times, level k with 2^-k of the triangles")
     ap.add_argument("--exclude", action="append", default=[], metavar="NAME",
                     help="leave out the meshes whose name contains NAME")
     ap.add_argument("--drop-mat", action="append", default=[], metavar="NAME",
@@ -301,8 +305,24 @@ def main():
     for r in args.ratio:
         k, v = r.split("=")
         fixed[k] = float(v)
+    level = {o.name: 0 for o in meshes}
+    if args.lods > 1:
+        # the levels: copies of each mesh (its modifiers, vertex groups and
+        # parent come along), named by their level
+        for o in list(meshes):
+            name = o.name
+            for k in range(1, args.lods):
+                c = o.copy()
+                c.data = o.data.copy()
+                for col in o.users_collection:
+                    col.objects.link(c)
+                c.name = "%s_LOD%d" % (name, k)
+                level[c.name] = k
+                meshes.append(c)
+            o.name = "%s_LOD0" % name
+            level[o.name] = 0
     for o in meshes:
-        ratio = next((v for k, v in fixed.items() if k in o.name), base)
+        ratio = next((v for k, v in fixed.items() if k in o.name), base) * 0.5 ** level[o.name]
         if ratio >= 1.0:
             continue
         bpy.context.view_layer.objects.active = o

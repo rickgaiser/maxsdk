@@ -13,8 +13,11 @@ inputs (demos/model/m*.hlsl):
     position V3-32, normal V4-8 (length 127), texture coordinates V2-16 (4.12),
     joints V4-8U (slots of the cluster's palette), weights V4-8U (sum 255).
 
-A skinned model has the positions and normals twice: in the rest pose (for the
-programs without skinning) and as the skin has them (mskin). Its animations
+A skinned model has its positions and normals only as the skin has them (the
+bind pose: the program or the EE skins them for every frame, the rest pose
+too), the positions as V3-16: 1 / 32768 of the model's size from its middle
+(header qoff, qsize); its clusters and strip runs start at multiples of 8
+vertices, where a V3-16 stream is quadword aligned. Its animations
 are baked: the joint matrices (joint node's world matrix times its inverse
 bind matrix) at --fps frames a second. Each material has one texture (32
 bits, or --tex-format t8: 256 colours of a CLUT), made to fit the GS memory
@@ -32,7 +35,7 @@ import re
 import struct
 import sys
 
-MAGIC = 0x324D584D  # "MXM2"
+MAGIC = 0x334D584D  # "MXM3"
 SKINNED = 1
 SINGLE = 2  # drawn once, not as copies
 
@@ -41,7 +44,7 @@ SECTIONS = ["POS", "NRM", "UV", "RPOS", "RNRM", "JNT", "WGT", "IDX", "CLUSTER",
             "SPOS", "SNRM", "SUV", "SRPOS", "SRNRM", "SJNT", "SWGT", "STRIP",
             "MAT", "TEX", "PAL", "ANIM", "PHYS", "COLL"]
 NSEC = 24
-HEADER_BYTES = 80 + 4 * NSEC  # struct mxm_header
+HEADER_BYTES = 96 + 4 * NSEC  # struct mxm_header
 PAL_MAX = 30  # joints a palette record can hold
 
 
@@ -375,14 +378,17 @@ def main():
     args = ap.parse_args()
 
     max_nv = max_ni = None
+    align = 4
     for h in args.limits:
         t = open(h).read()
         n = re.search(r"_MAX_N (\d+)", t)
         i = re.search(r"_MAX_I (\d+)", t)
+        a = re.search(r"_ALIGN (\d+)", t)
         if not n or not i:
             fail("%s: no MAX_N and MAX_I (not an indexed program)" % h)
         max_nv = min(max_nv or 1 << 30, int(n.group(1)))
         max_ni = min(max_ni or 1 << 30, int(i.group(1)))
+        align = max(align, int(a.group(1)) if a else 4)
     if args.palette > PAL_MAX:
         fail("a palette has at most %d joints" % PAL_MAX)
 
@@ -405,7 +411,9 @@ def main():
         fail("%d joints: a palette holds joint numbers of 16 bits" % len(joints))
 
     # ---- vertices and triangles, welded on their final (quantized) values
-    verts, vindex, tris = [], {}, []  # tris: (a, b, c, material)
+    # levels of detail: a mesh node named <name>_LOD<k> (fbx2glb.py --lods) is
+    # level k, the others level 0
+    verts, vindex, tris = [], {}, []  # tris: (a, b, c, (material, level))
     nin = 0  # vertices of the primitives
     mats_used = {}
     for ni in sc.mesh_nodes():
@@ -415,6 +423,10 @@ def main():
             fail("node %d has a mesh without the skin of the others" % ni)
         world = rest_world[ni]
         nm = normal_matrix(world)
+        lod = re.search(r"_LOD(\d+)$", node.get("name", "") or g["meshes"][node["mesh"]].get("name", ""))
+        lod = int(lod.group(1)) if lod else 0
+        if lod > 15:
+            fail("node %d: level of detail %d (at most 15)" % (ni, lod))
         for pi, prim in enumerate(g["meshes"][node["mesh"]]["primitives"]):
             at = prim["attributes"]
             pos = gl.accessor(at["POSITION"])
@@ -447,6 +459,10 @@ def main():
                 if skinned:
                     w = quant_weights(list(ww[k]))
                     j = [jj[k][c] if w[c] else jj[k][0] for c in range(4)]
+                    # the largest weight first (the EE's loops: one joint,
+                    # two, four)
+                    jw = sorted(zip(w, j), key=lambda x: -x[0])
+                    w, j = [x[0] for x in jw], [x[1] if x[0] else jw[0][1] for x in jw]
                     # the rest pose: the skin's joint matrices at rest
                     sp, sn = [0.0] * 3, [0.0] * 3
                     for c in range(4):
@@ -469,7 +485,7 @@ def main():
             for a, b, c in ptris:
                 t = (local[a], local[b], local[c])
                 if len(set(t)) == 3:
-                    tris.append(t + (mat,))
+                    tris.append(t + ((mat, lod),))
     if not tris:
         fail("no triangles")
     njoint = len(joints)
@@ -488,8 +504,9 @@ def main():
     def joints_of(v):
         return set(verts[v][5]) if skin else set()
 
-    clusters = []  # (tris as tuples of vertex ids, material)
-    for m in mat_ids:
+    # each level's materials one after the other
+    clusters = []  # (tris as tuples of vertex ids, (material, level))
+    for m in sorted({t[3] for t in tris}, key=lambda ml: (ml[1], ml[0])):
         mt = [t[:3] for t in tris if t[3] == m]
         # spatial order of the seeds: the Morton code of the centroid
         def morton(t):
@@ -591,17 +608,32 @@ def main():
 
     # ---- streams
     S = {k: bytearray() for k in SECTIONS}
+    if skin:
+        # the bind pose as V3-16: 1 / 32768 of qsize from qoff, the clusters
+        # and strip runs from multiples of 8 vertices (6 bytes each)
+        align = max(align, 8)
+        rlo = [min(v[3][k] for v in verts) for k in range(3)]
+        rhi = [max(v[3][k] for v in verts) for k in range(3)]
+        qoff = [(rlo[k] + rhi[k]) / 2 for k in range(3)]
+        qsize = max(rhi[k] - qoff[k] for k in range(3)) * 32768 / 32767 or 1.0
+    else:
+        qoff, qsize = [0.0, 0.0, 0.0], 0.0
+
+    def quant_pos(p):
+        return [max(-32767, min(32767, round((p[k] - qoff[k]) / qsize * 32768)))
+                for k in range(3)]
     stream_n = [0]  # vertices in the cluster streams
 
     def emit(dst, vs, pal):
         """The vertices vs into the streams of dst ("" or "S")."""
         for v in vs:
             k = verts[v]
-            S[dst + "POS"] += struct.pack("<3f", *k[0])
-            S[dst + "NRM"] += struct.pack("<4b", *k[1])
+            if not skin:
+                S[dst + "POS"] += struct.pack("<3f", *k[0])
+                S[dst + "NRM"] += struct.pack("<4b", *k[1])
             S[dst + "UV"] += struct.pack("<2h", *k[2])
             if skin:
-                S[dst + "RPOS"] += struct.pack("<3f", *k[3])
+                S[dst + "RPOS"] += struct.pack("<3h", *quant_pos(k[3]))
                 S[dst + "RNRM"] += struct.pack("<4b", *k[4])
                 S[dst + "JNT"] += struct.pack("<4B", *[slot[pal][j] for j in k[5]])
                 S[dst + "WGT"] += struct.pack("<4B", *k[6])
@@ -618,43 +650,49 @@ def main():
         if len(strip) > max_ni or len(vs) > max_nv:
             fail("internal: a cluster of %d vertices, %d indices" % (len(vs), len(strip)))
         ntri += len(ct)
-        # the vertices in the order of their first index
+        # the vertices in the order of their first index; skinned, those of
+        # one joint first, then those of two, then the rest (the EE skins
+        # each kind in a loop of its own: demos/model/model.c)
         first_use = []
         seen = set()
         for x in strip:
             if x not in seen:
                 seen.add(x)
                 first_use.append(x)
-        renum = {x: k for k, x in enumerate(first_use)}
         inv = {k: v for v, k in vs.items()}
+        if skin:
+            first_use.sort(key=lambda x: 1 if verts[inv[x]][6][0] == 255 else
+                           2 if not verts[inv[x]][6][2] else 3)
+        renum = {x: k for k, x in enumerate(first_use)}
         order = [inv[x] for x in first_use]
         first = stream_n[0]
-        emit("", order + [order[-1]] * ((-len(order)) % 4), pal_of[ci])
-        stream_n[0] += len(order) + (-len(order)) % 4
+        emit("", order + [order[-1]] * ((-len(order)) % align), pal_of[ci])
+        stream_n[0] += len(order) + (-len(order)) % align
         idx_at = len(S["IDX"])
         S["IDX"] += bytes(renum[x] for x in strip) + bytes((-len(strip)) % 16)
         pts = [verts[v][0] for v in order]
         cc = [sum(p[k] for p in pts) / len(pts) for k in range(3)]
         cr = max(math.sqrt(sum((p[k] - cc[k]) ** 2 for k in range(3))) for p in pts)
         cluster_recs.append(struct.pack("<IHHIHH4f", first, len(order), len(strip), idx_at,
-                                        mat_of[m], pal_of[ci], cc[0], cc[1], cc[2], cr))
-        strips_by_group.setdefault((mat_of[m], pal_of[ci]), []).append([order[x] for x in
+                                        mat_of[m[0]] | m[1] << 8, pal_of[ci], cc[0], cc[1],
+                                        cc[2], cr))
+        strips_by_group.setdefault((m[1], mat_of[m[0]], pal_of[ci]), []).append([order[x] for x in
                                                                          [renum[y] for y in strip]])
-    # 3 more vertices after the last: a batch reads up to ALIGN - 1 more (the
-    # last one again: its joints are in the last cluster's palette)
+    # align more vertices after the last: a batch reads up to ALIGN - 1 more
+    # (the last one again: its joints are in the last cluster's palette)
     if clusters:
-        emit("", [order[-1]] * 4, pal_of[-1])
+        emit("", [order[-1]] * align, pal_of[-1])
     S["CLUSTER"] = bytearray(b"".join(cluster_recs))
 
     # the strip path: each (material, palette) one strip of its clusters'
     strip_recs, sn = [], 0
-    for (mi, pi), lst in sorted(strips_by_group.items()):
+    for (li, mi, pi), lst in sorted(strips_by_group.items()):
         seq = list(lst[0])
         for s in lst[1:]:
             seq += [seq[-1], s[0]] + s
-        emit("S", seq + [seq[-1]] * (((-len(seq)) % 4) + 4), pi)
-        strip_recs.append(struct.pack("<IIHHI", sn, len(seq), mi, pi, 0))
-        sn += len(seq) + ((-len(seq)) % 4) + 4
+        emit("S", seq + [seq[-1]] * (((-len(seq)) % align) + align), pi)
+        strip_recs.append(struct.pack("<IIHHI", sn, len(seq), mi | li << 8, pi, 0))
+        sn += len(seq) + ((-len(seq)) % align) + align
     S["STRIP"] = bytearray(b"".join(strip_recs))
 
     # ---- textures
@@ -964,7 +1002,7 @@ def main():
         print("gltf2mxm: %d capsules" % len(recs))
 
     # ---- the layout: the sections of the other one left out
-    ncluster, nvert, nstrip_vert, nstrip = len(clusters), stream_n[0] + 4, sn, len(strip_recs)
+    ncluster, nvert, nstrip_vert, nstrip = len(clusters), stream_n[0] + align, sn, len(strip_recs)
     if args.layout == "strips":
         for k in ("POS", "NRM", "UV", "RPOS", "RNRM", "JNT", "WGT", "IDX", "CLUSTER"):
             S[k] = bytearray()
@@ -985,11 +1023,11 @@ def main():
         out += S[k]
     out += bytes((-len(out)) % 64)
     flags = (SKINNED if skin else 0) | (SINGLE if args.single else 0)
-    hdr = struct.pack("<16I4f", MAGIC, len(out), flags, nvert,
+    hdr = struct.pack("<16I8f", MAGIC, len(out), flags, nvert,
                       ncluster, ntri, nstrip_vert, nstrip,
                       len(mat_ids), njoint, len(palettes), len(anims),
                       max_nv, max_ni, args.palette, len(S["TEX"]),
-                      center[0], center[1], center[2], radius)
+                      center[0], center[1], center[2], radius, qoff[0], qoff[1], qoff[2], qsize)
     hdr += struct.pack("<%dI" % NSEC, *offs)
     assert len(hdr) == HEADER_BYTES
     out[:HEADER_BYTES] = hdr
