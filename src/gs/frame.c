@@ -10,11 +10,37 @@ static struct {
   u32 half_qw;
   int cur;
   int novsync;
+  u32 ring_qw;
+  int (*idle)(void);
 } f;
 
 void mx_frame_vsync(int on) {
   f.novsync = !on;
   mx_gs.immediate = !on;
+}
+
+void mx_frame_idle(int (*fn)(void)) { f.idle = fn; }
+
+/* The EE's work while it would wait: fn until it has none or the wait is
+   over. Returns its cycles (idle, not waiting). */
+static u32 idle_while(int (*wait)(u32), u32 arg) {
+  u32 busy = 0;
+  if (f.idle)
+    while (wait(arg)) {
+      u32 t1 = mx_count();
+      int more = f.idle();
+      busy += mx_count() - t1;
+      if (!more)
+        break;
+    }
+  mx_frame_stats.idle += busy;
+  return busy;
+}
+
+static int ring_full(u32 qwc) { return mx_mfifo_used() + qwc >= f.ring_qw; }
+static int not_ready(u32 arg) {
+  (void)arg;
+  return !mx_frame_ready();
 }
 
 void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
@@ -28,6 +54,8 @@ void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
   f.pos = f.half[0];
   f.end = f.half[0] + 2 * f.half_qw;
   mx_frame_stats.pushes = mx_frame_stats.wait_ring = mx_frame_stats.wait_buffer = 0;
+  mx_frame_stats.idle = 0;
+  f.ring_qw = size / 16;
   mx_gs.first = mx_gs.frames;
   mx_dma_wait(MX_CH_VIF1);
   mx_mfifo_init(MX_CH_VIF1, ring, size, 1);
@@ -40,9 +68,9 @@ static void flush(void) {
   u32 n = (u32)(f.pos - f.half[f.cur]) / 2;
   if (!n)
     return;
-  u32 t0 = mx_count();
+  u32 t0 = mx_count(), busy = idle_while(ring_full, n);
   mx_mfifo_push(f.half[f.cur], n);
-  mx_frame_stats.wait_ring += mx_count() - t0;
+  mx_frame_stats.wait_ring += mx_count() - t0 - busy;
   mx_frame_stats.pushes++;
   f.cur ^= 1;
   f.pos = f.half[f.cur];
@@ -76,12 +104,12 @@ int mx_frame_begin(u32 r, u32 g, u32 b) {
     /* the buffer of frame n - 2 is shown until frame n - 1 replaces it;
        push what is built so far so the GS has it meanwhile */
     flush();
-    u32 t0 = mx_count();
+    u32 t0 = mx_count(), busy = idle_while(not_ready, 0);
     mx_trace(MX_TR_WAIT_BEGIN, 0x100);
     while (!mx_frame_ready())
       ;
     mx_trace(MX_TR_WAIT_END, 0x100);
-    mx_frame_stats.wait_buffer += mx_count() - t0;
+    mx_frame_stats.wait_buffer += mx_count() - t0 - busy;
   }
   int buf = (int)(mx_gs.frames & 1);
   u64 *c = mx_frame_direct(14);

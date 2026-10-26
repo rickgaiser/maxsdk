@@ -26,6 +26,7 @@ struct mx_frame_stats {
   u32 pushes;      /* halves pushed into the ring */
   u32 wait_ring;   /* EE cycles waiting for ring space */
   u32 wait_buffer; /* EE cycles in mx_frame_begin waiting for the back buffer */
+  u32 idle;        /* EE cycles of the idle work (mx_frame_idle) in those waits */
 };
 
 extern struct mx_frame_stats mx_frame_stats;
@@ -37,6 +38,11 @@ extern struct mx_frame_stats mx_frame_stats;
    pipeline until mx_frame_stop(). */
 void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes);
 void mx_frame_stop(void);
+/* Work for the EE while it would wait for ring space or for the back
+   buffer: fn is called until the wait is over or it returns 0 (nothing more
+   to do now). Each call should be short, as the push waits for it. fn must
+   not use the frame stream. 0: none. */
+void mx_frame_idle(int (*fn)(void));
 
 /* Begin frame n: waits until its framebuffer is free, then appends the
    drawing environment for it and a clear. Returns the framebuffer (0/1). */

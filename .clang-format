@@ -1,0 +1,8 @@
+# maxsdk: LLVM style, 100 columns; <...> includes before "..." ones
+BasedOnStyle: LLVM
+ColumnLimit: 100
+IncludeCategories:
+  - Regex: '^<'
+    Priority: 1
+  - Regex: '.*'
+    Priority: 2

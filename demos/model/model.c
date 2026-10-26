@@ -16,8 +16,10 @@
             converter (a skinned model only)
 
    A skinned model animates with every program: mskin skins on VU1, for the
-   others the EE skins the vertices once a frame (VU0 macro mode) into the
-   streams they read. -static: they draw the rest pose.
+   others the EE skins the vertices (VU0 macro mode) into the streams they
+   read: a pose at least every k frames (-pose <k>, 2), more often when the
+   EE has the time, in its waits for VU1 (pose_frame); -pose 1: a pose each
+   frame, before it draws. -static: they draw the rest pose.
 
    A model with levels of detail (fbx2glb.py --lods) draws each part at the
    level its projected size asks for: level 0 down to a radius of R0 / 2
@@ -581,6 +583,8 @@ static struct {
   u32 verts, indices, tris, draws;
   u32 skin, skinned; /* EE cycles of the skinning, vertices skinned */
 } st_frame;
+static u64 skin_cyc; /* all of them, since the start */
+static u32 skin_nv;
 
 /* GS state for material m in pass (after the batches before it are drawn:
    a register written by PATH2 would reach the GS before their packets). */
@@ -903,6 +907,9 @@ typedef s8 s8x4 __attribute__((vector_size(4)));
 static f32x4 skin_pos[2][MAX_SKIN + 8] MX_ALIGNED(64);
 static s8x4 skin_nrm[2][MAX_SKIN + 8] MX_ALIGNED(64);
 static int skin_buf;     /* this frame's */
+/* of each buffer: the number of the last frame that draws from it, + 1 (it
+   may be written once mx_frame_done() has reached it) */
+static u32 buf_drawn[2];
 static int skin_rest[2]; /* a buffer holds the rest pose of layout 1 + indexed, else 0 */
 
 /* This frame's joint matrices (four columns), the springs' where they move
@@ -1040,7 +1047,7 @@ MX_INLINE void skin_vertices(const s16 *__restrict pos, const s8x4 *__restrict n
 }
 /* Vertices first .. first + n - 1 of the cluster or strip streams, of
    palette pal (skin_vertices: n1, n2). */
-static void skin_run(u32 first, u32 n1, u32 n2, u32 n, u32 pal, int strips, int normals) {
+static void skin_run(int buf, u32 first, u32 n1, u32 n2, u32 n, u32 pal, int strips, int normals) {
   int o = strips ? MXM_SPOS - MXM_POS : 0;
   const s16 *pos = (const s16 *)sec(MXM_RPOS + o) + 3 * first;
   const s8x4 *nrm = (const s8x4 *)sec(MXM_RNRM + o) + first;
@@ -1048,11 +1055,11 @@ static void skin_run(u32 first, u32 n1, u32 n2, u32 n, u32 pal, int strips, int 
   const u8x4 *wgt = (const u8x4 *)sec(MXM_WGT + o) + first;
   const f32x4(*pm)[4] = pal_joints(pal);
   if (normals)
-    skin_vertices(pos, nrm, jnt, wgt, pm, skin_pos[skin_buf] + first, skin_nrm[skin_buf] + first,
-                  n1, n2, n, 1);
+    skin_vertices(pos, nrm, jnt, wgt, pm, skin_pos[buf] + first, skin_nrm[buf] + first, n1, n2, n,
+                  1);
   else
-    skin_vertices(pos, nrm, jnt, wgt, pm, skin_pos[skin_buf] + first, skin_nrm[skin_buf] + first,
-                  n1, n2, n, 0);
+    skin_vertices(pos, nrm, jnt, wgt, pm, skin_pos[buf] + first, skin_nrm[buf] + first, n1, n2, n,
+                  0);
 }
 
 /* This frame's skinning (after mx_frame_begin and joints_frame), of the
@@ -1061,10 +1068,11 @@ static void skin_frame(void) {
   st_frame.skin = st_frame.skinned = 0;
   if (!M.skinned || V.shader == S_SKIN)
     return;
-  /* frame n - 2, which used this buffer, is done */
-  while (mx_frame_done() + 1 < mx_frame_number())
-    ;
+  /* frame n - 2, which used this buffer, is done (or the frame of a pose
+     that drew from it) */
   skin_buf = (int)(mx_frame_number() & 1);
+  while (mx_frame_done() < buf_drawn[skin_buf])
+    ;
   int rest = !animated(V.shader), layout = 1 + ix_now();
   if (rest && skin_rest[skin_buf] == layout)
     return;
@@ -1077,7 +1085,7 @@ static void skin_frame(void) {
       const struct group *q = &grp[1][gi];
       if (rest || (lod_need[q->mat & 0xFF] >> (q->mat >> 8) & 1)) {
         for (u32 c = q->c; c < q->e; c++)
-          skin_run(M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, q->pal, 0, normals);
+          skin_run(skin_buf, M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, q->pal, 0, normals);
         n += q->nv;
       }
     }
@@ -1087,7 +1095,7 @@ static void skin_frame(void) {
   } else {
     for (u32 r = 0; r < M.h->nstrip; r++)
       if (rest || (lod_need[M.strip[r].mat & 0xFF] >> (M.strip[r].mat >> 8) & 1)) {
-        skin_run(M.strip[r].first, 0, 0, M.strip[r].n, M.strip[r].pal, 1, normals);
+        skin_run(skin_buf, M.strip[r].first, 0, 0, M.strip[r].n, M.strip[r].pal, 1, normals);
         n += M.strip[r].n;
       }
     mx_dcache_writeback(skin_pos[skin_buf], M.h->nsvert * 16);
@@ -1095,6 +1103,196 @@ static void skin_frame(void) {
       mx_dcache_writeback(skin_nrm[skin_buf], M.h->nsvert * 4);
   }
   st_frame.skin = mx_count() - t0, st_frame.skinned = n;
+  skin_cyc += st_frame.skin, skin_nv += n;
+}
+
+/* ---- poses: the animation apart from the frames -------------------------------------- */
+
+/* -pose <k> (2): a pose (the animation, the springs, the joint matrices) is
+   made at least every k frames, and as often as every frame when the EE has
+   the time: it skins the pose into the buffer not drawn (the back one) in
+   chunks, while it waits for ring space or for the back framebuffer
+   (mx_frame_idle), and at the end of each frame up to its share (1 / k of
+   the pose a frame). Each frame draws the newest complete pose; the camera
+   and the turning still move every frame (VU1 applies them). A frame that
+   needs what the pose drawn lacks (a level of detail, the layout, the
+   normals) first completes the pose being skinned, with that added.
+   -pose 1, the rest pose, mskin and the pictures compared: each frame skins
+   its own pose first (skin_frame). */
+static int pose_frames = 2;
+static struct {
+  int on;                  /* a pose is being skinned into the back buffer */
+  int layout, normals;     /* the job's: 1 + indexed; with normals */
+  u32 af;                  /* the job's animation frame */
+  u16 need[MAX_MAT];       /* the job's levels of each material (lod_need) */
+  u32 unit, k;             /* the next group (indexed) or strip run, its next cluster */
+  int rescan;              /* levels were added: once more over the units */
+  u32 total, done, frames; /* vertices to skin, skinned; frames since it began */
+  int front, front_ok;     /* the buffer drawn, a complete pose in it */
+  int front_layout, front_normals;
+  u32 front_af;
+  u16 front_need[MAX_MAT];
+  u32 poses; /* completed */
+} J;
+static u8 unit_done[MAX_GROUP > MAX_STRIP ? MAX_GROUP : MAX_STRIP];
+static u32 pose_af; /* the animation frame drawn (cluster culling) */
+
+static u32 units(int layout) { return layout == 2 ? ngrp[1] : M.h->nstrip; }
+static u32 unit_mat(int layout, u32 u) { return layout == 2 ? grp[1][u].mat : M.strip[u].mat; }
+static u32 unit_nv(int layout, u32 u) { return layout == 2 ? grp[1][u].nv : M.strip[u].n; }
+static int unit_needed(u32 u) {
+  u32 mat = unit_mat(J.layout, u);
+  return J.need[mat & 0xFF] >> (mat >> 8) & 1;
+}
+
+/* Up to about budget vertices more of the job (whole clusters and strip
+   runs); returns whether it is complete (job_step(0): only that). */
+static int job_step(u32 budget) {
+  int back = J.front ^ 1;
+  u32 nu = units(J.layout), n = 0, t0 = mx_count();
+  for (;;) {
+    if (J.unit >= nu) {
+      if (!J.rescan)
+        break;
+      J.rescan = 0, J.unit = J.k = 0;
+      continue;
+    }
+    u32 u = J.unit;
+    if (unit_done[u] || !unit_needed(u)) {
+      J.unit++, J.k = 0;
+      continue;
+    }
+    if (n >= budget)
+      break;
+    if (J.layout == 2) {
+      const struct group *q = &grp[1][u];
+      for (; q->c + J.k < q->e && n < budget; J.k++) {
+        u32 c = q->c + J.k;
+        skin_run(back, M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, q->pal, 0, J.normals);
+        n += M.cl[c].nv;
+      }
+      if (q->c + J.k < q->e)
+        break;
+    } else {
+      const struct mxm_strip *r = &M.strip[u];
+      skin_run(back, r->first, 0, 0, r->n, r->pal, 1, J.normals);
+      n += r->n;
+    }
+    unit_done[u] = 1, J.unit++, J.k = 0;
+  }
+  J.done += n;
+  u32 dt = mx_count() - t0;
+  st_frame.skin += dt, st_frame.skinned += n;
+  skin_cyc += dt, skin_nv += n;
+  return J.unit >= nu && !J.rescan;
+}
+
+/* The back buffer may be written: the frames that drew from it are done. */
+static int back_free(void) { return mx_frame_done() >= buf_drawn[J.front ^ 1]; }
+
+static void job_need(const u16 *need) {
+  for (u32 mt = 0; mt < M.h->nmat; mt++)
+    if (need[mt] & ~J.need[mt]) {
+      u16 add = need[mt] & ~J.need[mt];
+      J.need[mt] |= add;
+      for (u32 u = 0; u < units(J.layout); u++) {
+        u32 mat = unit_mat(J.layout, u);
+        if ((mat & 0xFF) == mt && (add >> (mat >> 8) & 1))
+          J.total += unit_nv(J.layout, u);
+      }
+      J.rescan = 1;
+    }
+}
+
+/* A new pose at time t, animation frame af, into the back buffer. */
+static void job_start(float t, u32 af, int layout, int normals) {
+  if (!(P.n && !P.reset && t == P.t)) /* the springs at t already */
+    phys_update(af, t);
+  joints_frame((u32)V.anim, af);
+  J.on = 1, J.layout = layout, J.normals = normals, J.af = af;
+  J.unit = J.k = 0, J.rescan = 0, J.total = J.done = J.frames = 0;
+  for (u32 u = 0; u < units(layout); u++)
+    unit_done[u] = 0;
+  for (u32 mt = 0; mt < M.h->nmat; mt++)
+    J.need[mt] = 0;
+  job_need(lod_need);
+  J.rescan = 0;
+  skin_rest[J.front ^ 1] = 0;
+}
+
+/* The job completed (waiting for the back buffer) and made the front. */
+static void job_finish(void) {
+  int back = J.front ^ 1;
+  while (!back_free())
+    ;
+  while (!job_step(~0u))
+    ;
+  mx_dcache_writeback(skin_pos[back], (J.layout == 2 ? M.h->nvert : M.h->nsvert) * 16);
+  if (J.normals)
+    mx_dcache_writeback(skin_nrm[back], (J.layout == 2 ? M.h->nvert : M.h->nsvert) * 4);
+  J.front = back, J.front_ok = 1, J.front_layout = J.layout, J.front_normals = J.normals;
+  J.front_af = J.af;
+  for (u32 mt = 0; mt < M.h->nmat; mt++)
+    J.front_need[mt] = J.need[mt];
+  J.on = 0, J.poses++;
+}
+
+/* mx_frame_idle: a chunk of the job, once the back buffer is free. */
+static int pose_idle(void) {
+  if (!J.on || job_step(0))
+    return 0;
+  if (back_free())
+    job_step(256);
+  return 1;
+}
+
+/* This frame's pose (after lod_choose): the newest complete one, or one
+   made now (see above). */
+static void pose_frame(float t, u32 af) {
+  st_frame.skin = st_frame.skinned = 0;
+  int layout = 1 + ix_now(), normals = V.shader != S_FLAT;
+  if (pose_frames <= 1 || !M.skinned || !animated(V.shader) || V.shader == S_SKIN) {
+    J.on = J.front_ok = 0;
+    phys_update(af, t);
+    if (M.skinned)
+      joints_frame(animated(V.shader) ? (u32)V.anim : 0, af);
+    skin_frame();
+    J.poses += animated(V.shader) && V.shader != S_SKIN;
+    pose_af = af;
+    buf_drawn[skin_buf] = mx_frame_number() + 1;
+    J.front = skin_buf;
+    return;
+  }
+  if (J.on && (J.layout != layout || J.normals < normals))
+    J.on = 0;
+  int lacks = !J.front_ok || J.front_layout != layout || J.front_normals < normals;
+  for (u32 mt = 0; mt < M.h->nmat && !lacks; mt++)
+    lacks = (lod_need[mt] & ~J.front_need[mt]) != 0;
+  if (lacks) {
+    if (!J.on)
+      job_start(t, af, layout, normals);
+    job_need(lod_need);
+    job_finish();
+  } else if (J.on && job_step(0)) {
+    job_finish();
+  }
+  if (!J.on)
+    job_start(t, af, layout, normals);
+  J.frames++;
+  skin_buf = J.front, pose_af = J.front_af;
+  buf_drawn[skin_buf] = mx_frame_number() + 1;
+}
+
+/* The end of the frame's draws: the job up to its share. */
+static void pose_end(void) {
+  if (!J.on)
+    return;
+  u32 share = J.frames >= (u32)pose_frames ? J.total : J.total / (u32)pose_frames * J.frames;
+  if (J.done >= share)
+    return;
+  while (!back_free())
+    ;
+  job_step(share - J.done);
 }
 
 /* The streams of a shader's inputs; strips: the S* streams. */
@@ -1334,7 +1532,6 @@ static void frame(float t) {
   u32 af = 0;
   if (animated(V.shader))
     af = (u32)(s32)(t * M.anim[V.anim].fps);
-  phys_update(af, t);
   float step = 2.4f * R, o = -step * itof(V.copies - 1) * 0.5f;
   for (u32 mt = 0; mt < M.h->nmat; mt++)
     lod_need[mt] = 0;
@@ -1344,12 +1541,11 @@ static void frame(float t) {
       mvp_of(mvp, o + step * itof(x), o + step * itof(z), light, eye);
       lod_choose(mvp, lod_sel[z * V.copies + x]);
     }
-  if (M.skinned)
-    joints_frame(animated(V.shader) ? (u32)V.anim : 0, af);
-  skin_frame();
+  pose_frame(t, af);
   for (int z = 0; z < V.copies; z++)
     for (int x = 0; x < V.copies; x++)
-      draw_copy(o + step * itof(x), o + step * itof(z), af, lod_sel[z * V.copies + x]);
+      draw_copy(o + step * itof(x), o + step * itof(z), pose_af, lod_sel[z * V.copies + x]);
+  pose_end();
   mx_frame_commit(mx_e_cnt(mx_frame_reserve(1), 0, mx_vif_flush(), 0));
   for (int l = 0; l < 3; l++)
     hud_text(8, 6 + 9 * (u32)l, hud[l]);
@@ -1421,7 +1617,8 @@ static void busy(u32 *vu1, u32 *path, u32 *gs) {
 struct result {
   u32 shader, indexed, frames, tris, verts, indices, vu1, path, gs, ee;
   u64 cycles; /* a slow run is longer than the 32-bit Count's 14.6 s */
-  u32 skin, skinned; /* of the last frame */
+  u32 skin, skinned; /* a frame (on average) */
+  u32 poses;         /* poses made */
 };
 static struct result results[2 * S_N];
 static u32 nresults;
@@ -1435,10 +1632,13 @@ static void report(const struct result *r) {
             (u32)(r->tris * per_s), (u32)(r->verts * per_s), (u32)(r->indices * per_s),
             r->indexed ? "indices" : "strip vertices", r->vu1, r->path, r->gs, r->ee);
   if (r->skinned)
-    mx_printf("model bench %-6s %-7s: EE skin %u.%u ms a frame, %u vertices, %u cycles a vertex\n",
+    mx_printf("model bench %-6s %-7s: EE skin %u.%u ms a frame, %u vertices, %u cycles a vertex, "
+              "%u.%u poses/s\n",
               shader_names[r->shader], r->indexed ? "indexed" : "strips",
-              (u32)((u64)r->skin * 10000 / MX_EE_HZ / 10), (u32)((u64)r->skin * 10000 / MX_EE_HZ % 10),
-              r->skinned, r->skin / r->skinned);
+              (u32)((u64)r->skin * 10000 / MX_EE_HZ / 10),
+              (u32)((u64)r->skin * 10000 / MX_EE_HZ % 10), r->skinned, r->skin / r->skinned,
+              (u32)((u64)r->poses * MX_EE_HZ * 10 / r->cycles / 10),
+              (u32)((u64)r->poses * MX_EE_HZ * 10 / r->cycles % 10));
 }
 
 static int want_interactive;
@@ -1450,7 +1650,8 @@ static void bench(int shader, int indexed) {
   u32 waits0 = mx_frame_stats.wait_buffer + mx_frame_stats.wait_ring;
   mx_trace_sample(1000);
   u32 last = mx_count(), f0 = mx_gs.frames, v0 = mx_gs.vsync;
-  u64 cycles = 0;
+  u64 cycles = 0, sc0 = skin_cyc;
+  u32 sn0 = skin_nv, p0 = J.poses;
   for (u32 f = 0; f < BENCH_FRAMES; f++) {
     if (pad_pressed() & MX_PAD_START)
       want_interactive = 1;
@@ -1469,7 +1670,9 @@ static void bench(int shader, int indexed) {
   r->shader = (u32)shader, r->indexed = (u32)indexed, r->frames = BENCH_FRAMES;
   r->cycles = cycles + (mx_count() - last);
   r->tris = st_frame.tris, r->verts = st_frame.verts, r->indices = st_frame.indices;
-  r->skin = st_frame.skin, r->skinned = st_frame.skinned;
+  r->skin = (u32)((skin_cyc - sc0) / BENCH_FRAMES), r->skinned = (skin_nv - sn0) / BENCH_FRAMES;
+  /* a frame of its own pose each: -pose 1 or skin_frame */
+  r->poses = J.poses - p0;
   busy(&r->vu1, &r->path, &r->gs);
   mx_trace_sample(0);
   u32 w = mx_frame_stats.wait_buffer + mx_frame_stats.wait_ring - waits0;
@@ -1531,6 +1734,8 @@ static int same_pictures(int nshader) {
     return 0;
   }
   mx_frame_vsync(1);
+  int pf = pose_frames;
+  pose_frames = 1; /* each picture its own pose */
   V.copies = copies(2), V.spin = 0.7f, V.dist = min_dist();
   _Static_assert(S_SCEIC == S_SCEI + 1, "msceic is compared with the mscei strips before it");
   for (int s = 0; s < nshader; s++) {
@@ -1541,6 +1746,7 @@ static int same_pictures(int nshader) {
       frame(0.25f);
       if (picture(line_hash[ix]) < 0) {
         mx_printf("model: the picture could not be read\n");
+        pose_frames = pf;
         return 1;
       }
     }
@@ -1557,6 +1763,7 @@ static int same_pictures(int nshader) {
       mx_printf("model: %s strips and %s: the same picture\n", shader_names[s], other);
     }
   }
+  pose_frames = pf;
   return fail;
 }
 
@@ -1588,6 +1795,7 @@ static int use_model(u32 i) {
     return -1;
   }
   skin_rest[0] = skin_rest[1] = 0;
+  J.on = J.front_ok = 0;
   mx_printf("model: %s: %u triangles, %u clusters, %u vertices in clusters, %u in strips, %u "
             "materials, %u joints, %u animations\n",
             M.name, M.h->ntri, M.h->ncluster, M.h->nvert, M.h->nsvert, M.h->nmat, M.h->njoint,
@@ -1617,6 +1825,7 @@ static void interactive(int nshader) {
   u32 v0 = mx_gs.vsync, n = 0, tp = mx_count(), fp = mx_gs.frames, fv = v0;
   float yaw0 = V.yaw;
   u64 tri = 0, vert = 0;
+  u32 pp = J.poses;
   mx_trace_sample(1000);
   for (;;) {
     u32 b = pad_pressed(), held = mx_pad_buttons(0);
@@ -1735,10 +1944,14 @@ static void interactive(int nshader) {
       p = hud_u(p, vu1);
       p = hud_cat(p, "% GS ");
       p = hud_u(p, gs);
-      hud_cat(p, "%");
+      p = hud_cat(p, "%");
+      if (animated(V.shader) && V.shader != S_SKIN) {
+        p = hud_cat(p, "  POSES ");
+        p = hud_u(p, (u32)((u64)(J.poses - pp) * MX_EE_HZ / cyc));
+      }
       mx_trace_sample(0);
       mx_trace_sample(1000);
-      tp = mx_count(), fp = mx_gs.frames, n = 0, tri = vert = 0;
+      tp = mx_count(), fp = mx_gs.frames, n = 0, tri = vert = 0, pp = J.poses;
     }
   }
   mx_trace_sample(0);
@@ -1750,6 +1963,7 @@ static void interactive(int nshader) {
 #endif
 static void record(void) {
   mx_frame_vsync(1);
+  pose_frames = 1; /* each picture its own pose */
   V.copies = copies(MODEL_RECORD_COPIES), V.indexed = has_layout(1);
   V.shader = S_SCEI;
   V.dist = 0;
@@ -1789,6 +2003,7 @@ int main(int argc, char **argv) {
   mx_gs_init(SW, SH);
   mx_vu_reset(3);
   pipeline_restart();
+  mx_frame_idle(pose_idle);
   sh[S_FLAT][0] = MX_VU_SHADER(MFLAT, mflat_vu, mflat_vu_end);
   sh[S_FLAT][1] = MX_VU_ISHADER(IX_MFLAT, mflat_ix_vu, mflat_ix_vu_end);
   sh[S_LIT][0] = MX_VU_SHADER(MLIT, mlit_vu, mlit_vu_end);
@@ -1823,6 +2038,10 @@ int main(int argc, char **argv) {
     }
     if (!strcmp_(argv[a], "-lodr") && a + 1 < argc) {
       lod_r0 = itof((s32)atou_(argv[++a]));
+      continue;
+    }
+    if (!strcmp_(argv[a], "-pose") && a + 1 < argc) {
+      pose_frames = (int)atou_(argv[++a]);
       continue;
     }
     if (!strcmp_(argv[a], "-static")) {
