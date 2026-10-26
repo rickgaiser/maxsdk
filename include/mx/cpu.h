@@ -105,8 +105,11 @@ MX_INLINE u32 mx_pcr1(void) {
 /* ---- Cache ------------------------------------------------------------- */
 
 #define MX_DCACHE_LINE 64
+#define MX_DCACHE_BYTES 8192
 
-/* Write back (and keep) the data cache lines covering [p, p + size). */
+/* Write back (and keep) the data cache lines covering [p, p + size); from
+   MX_DCACHE_BYTES on, all of the cache, written back and invalidated (128
+   operations instead of one a line). */
 void mx_dcache_writeback(const void *p, u32 size);
 /* Invalidate the data cache lines covering [p, p + size), without writing
    back. Lines only partly inside the range lose their other bytes too. */
