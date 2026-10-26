@@ -45,9 +45,30 @@
 #define MXM_SINGLE 2u /* drawn once, not as copies (gltf2mxm.py --single) */
 
 enum {
-  MXM_POS, MXM_NRM, MXM_UV, MXM_RPOS, MXM_RNRM, MXM_JNT, MXM_WGT, MXM_IDX, MXM_CLUSTER,
-  MXM_SPOS, MXM_SNRM, MXM_SUV, MXM_SRPOS, MXM_SRNRM, MXM_SJNT, MXM_SWGT, MXM_STRIP,
-  MXM_MAT, MXM_TEX, MXM_PAL, MXM_ANIM, MXM_PHYS, MXM_COLL,
+  MXM_POS,
+  MXM_NRM,
+  MXM_UV,
+  MXM_RPOS,
+  MXM_RNRM,
+  MXM_JNT,
+  MXM_WGT,
+  MXM_IDX,
+  MXM_CLUSTER,
+  MXM_SPOS,
+  MXM_SNRM,
+  MXM_SUV,
+  MXM_SRPOS,
+  MXM_SRNRM,
+  MXM_SJNT,
+  MXM_SWGT,
+  MXM_STRIP,
+  MXM_MAT,
+  MXM_TEX,
+  MXM_PAL,
+  MXM_ANIM,
+  MXM_PHYS,
+  MXM_COLL,
+  MXM_OUTFIT,
   MXM_NSEC = 24
 };
 
@@ -133,5 +154,16 @@ struct mxm_coll {
   float a[3], b[3];
 };
 _Static_assert(sizeof(struct mxm_coll) == 32, "gltf2mxm.py writes 32 bytes");
+
+/* OUTFIT: the outfits of a model made of several (fbx2glb.py with an FBX
+   for each): this header, the n names (16 bytes each), then at cl (byte
+   offset in the section) a u32 mask for each cluster, at strip one for each
+   strip run: bit k, drawn in outfit k. A cluster or strip run is of one
+   mask; those of one material and level are in the order of their masks.
+   Without the section, all is drawn. */
+struct mxm_outfit {
+  u32 n, cl, strip, pad;
+};
+_Static_assert(sizeof(struct mxm_outfit) == 16, "gltf2mxm.py writes 16 bytes");
 
 #endif

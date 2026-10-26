@@ -46,9 +46,10 @@ static void hud_init(u32 tbp, u32 lines) {
   mx_frame_wait_path3();
 }
 
-/* Text at (x, y): pixels, and lines of a 224-line screen. Characters not in
-   the font are spaces. */
-static void hud_text(u32 x, u32 y, const char *s) {
+/* Text at (x, y): pixels, and lines of a 224-line screen, in colour rgb
+   (0xRRGGBB, 0x80 full) and scale times as big. Characters not in the font
+   are spaces. */
+static void hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
   u32 n = 0;
   for (const char *p = s; *p; p++)
     n++;
@@ -61,8 +62,8 @@ static void hud_text(u32 x, u32 y, const char *s) {
     for (u32 i = 0; i < 48; i++)
       part[i] = s[i];
     part[48] = 0;
-    hud_text(x, y, part);
-    hud_text(x + 48 * 6, y, s + 48);
+    hud_text(x, y, part, rgb, scale);
+    hud_text(x + 48 * 6 * scale, y, s + 48, rgb, scale);
     return;
   }
   u64 *c = mx_frame_direct(6 + 4 * n);
@@ -70,11 +71,12 @@ static void hud_text(u32 x, u32 y, const char *s) {
   c = mx_e_ad(c, MX_GS_REG_TEX0_1, mx_gs_tex0(hud_tbp, 4, MX_GS_PSM_CT32, 8, 3, 1, 0));
   c = mx_e_ad(c, MX_GS_REG_TEX1_1, mx_gs_tex1(0, 0, 0, 0, 0, 0, 0));
   c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(1, 6, 0x40, 0, 0, 0, 1, 1));
-  c = mx_e_ad(c, MX_GS_REG_RGBAQ, mx_gs_rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f));
+  c = mx_e_ad(c, MX_GS_REG_RGBAQ,
+              mx_gs_rgbaq(rgb >> 16 & 0xFF, rgb >> 8 & 0xFF, rgb & 0xFF, 0x80, 1.0f));
   c = mx_e_giftag(c, n, 1, (s32)mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0),
                   MX_GIF_FLG_PACKED, 4,
                   mx_gif_regs4(MX_GIF_REG_UV, MX_GIF_REG_XYZ2, MX_GIF_REG_UV, MX_GIF_REG_XYZ2));
-  for (const char *p = s; *p; p++, x += 6) {
+  for (const char *p = s; *p; p++, x += 6 * scale) {
     u32 g = 0;
     for (u32 i = 0; hud_chars[i]; i++)
       if (hud_chars[i] == *p)
@@ -84,8 +86,33 @@ static void hud_text(u32 x, u32 y, const char *s) {
     c = mx_e_uv(c, g * 6 * 16 + 8, 8);
     c = mx_e_xyz2(c, mx_gs_px(x), mx_gs_py(y * hud_lines / 224), 0xFFFFFF, 0);
     c = mx_e_uv(c, (g * 6 + 5) * 16 + 8, 7 * 16 + 8);
-    c = mx_e_xyz2(c, mx_gs_px(x + 5), mx_gs_py((y + 7) * hud_lines / 224), 0xFFFFFF, 0);
+    c = mx_e_xyz2(c, mx_gs_px(x + 5 * scale), mx_gs_py((y + 7 * scale) * hud_lines / 224), 0xFFFFFF,
+                  0);
   }
+  mx_frame_commit(c);
+}
+
+/* The width in pixels of text s at scale. */
+static u32 hud_width(const char *s, u32 scale) {
+  u32 n = 0;
+  for (const char *p = s; *p; p++)
+    n++;
+  return n ? (6 * n - 1) * scale : 0;
+}
+
+/* A rectangle at (x, y), w x h (pixels, and lines of a 224-line screen),
+   blended over what is drawn: rgba (0xAARRGGBB, alpha 0x80 opaque). */
+static void hud_box(u32 x, u32 y, u32 w, u32 h, u32 rgba) {
+  u64 *c = mx_frame_direct(7);
+  c = mx_e_ad_tag(c, 3, 1);
+  c = mx_e_ad(c, MX_GS_REG_ALPHA_1, mx_gs_alpha(0, 1, 0, 1, 0));
+  c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 1, 0, 0, 0, 0, 1, 1));
+  c = mx_e_ad(c, MX_GS_REG_RGBAQ,
+              mx_gs_rgbaq(rgba >> 16 & 0xFF, rgba >> 8 & 0xFF, rgba & 0xFF, rgba >> 24, 1.0f));
+  c = mx_e_giftag(c, 1, 1, (s32)mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 0, 0, 1, 0, 0, 0, 0),
+                  MX_GIF_FLG_PACKED, 2, mx_gif_regs2(MX_GIF_REG_XYZ2, MX_GIF_REG_XYZ2));
+  c = mx_e_xyz2(c, mx_gs_px(x), mx_gs_py(y * hud_lines / 224), 0xFFFFFF, 0);
+  c = mx_e_xyz2(c, mx_gs_px(x + w), mx_gs_py((y + h) * hud_lines / 224), 0xFFFFFF, 0);
   mx_frame_commit(c);
 }
 
