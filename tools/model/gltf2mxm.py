@@ -23,6 +23,15 @@ bind matrix) at --fps frames a second. Each material has one texture (32
 bits, or --tex-format t8: 256 colours of a CLUT), made to fit the GS memory
 (--tex-budget), and its mean colour. Needs Python 3 and
 Pillow (PIL) for the images; nothing else.
+
+A model of outfits (fbx2glb.py with more than one input: the scene's extras
+mxm_outfits, the names, and each mesh node's mxm_outfit, the mask of the
+outfits it is in) has section OUTFIT (23): a header of four u32 (the number
+of outfits, the byte offsets in the section of the cluster masks and of the
+strip run masks, 0), the names (16 bytes each), then a u32 mask for each
+cluster and for each strip run (bit k: drawn in outfit k), each array 16-byte
+aligned. A cluster or strip run is of one mask; those of one material and
+level are in the order of their masks.
 """
 
 import argparse
@@ -42,7 +51,7 @@ SINGLE = 2  # drawn once, not as copies
 # sections, in the order of mxm.h
 SECTIONS = ["POS", "NRM", "UV", "RPOS", "RNRM", "JNT", "WGT", "IDX", "CLUSTER",
             "SPOS", "SNRM", "SUV", "SRPOS", "SRNRM", "SJNT", "SWGT", "STRIP",
-            "MAT", "TEX", "PAL", "ANIM", "PHYS", "COLL"]
+            "MAT", "TEX", "PAL", "ANIM", "PHYS", "COLL", "OUTFIT"]
 NSEC = 24
 HEADER_BYTES = 96 + 4 * NSEC  # struct mxm_header
 PAL_MAX = 30  # joints a palette record can hold
@@ -413,7 +422,13 @@ def main():
     # ---- vertices and triangles, welded on their final (quantized) values
     # levels of detail: a mesh node named <name>_LOD<k> (fbx2glb.py --lods) is
     # level k, the others level 0
-    verts, vindex, tris = [], {}, []  # tris: (a, b, c, (material, level))
+    # outfits: each node's mask (extras mxm_outfit), all outfits without one
+    outfits = (g.get("scenes", [{}])[g.get("scene", 0)].get("extras", {}).get("mxm_outfits") or "")
+    outfits = [n for n in outfits.split(",") if n]
+    if len(outfits) > 32:
+        fail("%d outfits (at most 32)" % len(outfits))
+    all_outfits = (1 << len(outfits)) - 1
+    verts, vindex, tris = [], {}, []  # tris: (a, b, c, (material, level, outfit mask))
     nin = 0  # vertices of the primitives
     mats_used = {}
     for ni in sc.mesh_nodes():
@@ -427,6 +442,7 @@ def main():
         lod = int(lod.group(1)) if lod else 0
         if lod > 15:
             fail("node %d: level of detail %d (at most 15)" % (ni, lod))
+        omask = node.get("extras", {}).get("mxm_outfit", all_outfits) & all_outfits
         for pi, prim in enumerate(g["meshes"][node["mesh"]]["primitives"]):
             at = prim["attributes"]
             pos = gl.accessor(at["POSITION"])
@@ -485,7 +501,7 @@ def main():
             for a, b, c in ptris:
                 t = (local[a], local[b], local[c])
                 if len(set(t)) == 3:
-                    tris.append(t + ((mat, lod),))
+                    tris.append(t + ((mat, lod, omask),))
     if not tris:
         fail("no triangles")
     njoint = len(joints)
@@ -504,9 +520,9 @@ def main():
     def joints_of(v):
         return set(verts[v][5]) if skin else set()
 
-    # each level's materials one after the other
-    clusters = []  # (tris as tuples of vertex ids, (material, level))
-    for m in sorted({t[3] for t in tris}, key=lambda ml: (ml[1], ml[0])):
+    # each level's materials one after the other, each material's outfit masks
+    clusters = []  # (tris as tuples of vertex ids, (material, level, outfit mask))
+    for m in sorted({t[3] for t in tris}, key=lambda ml: (ml[1], ml[0], ml[2])):
         mt = [t[:3] for t in tris if t[3] == m]
         # spatial order of the seeds: the Morton code of the centroid
         def morton(t):
@@ -676,7 +692,7 @@ def main():
         cluster_recs.append(struct.pack("<IHHIHH4f", first, len(order), len(strip), idx_at,
                                         mat_of[m[0]] | m[1] << 8, pal_of[ci], cc[0], cc[1],
                                         cc[2], cr))
-        strips_by_group.setdefault((m[1], mat_of[m[0]], pal_of[ci]), []).append([order[x] for x in
+        strips_by_group.setdefault((m[1], mat_of[m[0]], m[2], pal_of[ci]), []).append([order[x] for x in
                                                                          [renum[y] for y in strip]])
     # align more vertices after the last: a batch reads up to ALIGN - 1 more
     # (the last one again: its joints are in the last cluster's palette)
@@ -684,9 +700,10 @@ def main():
         emit("", [order[-1]] * align, pal_of[-1])
     S["CLUSTER"] = bytearray(b"".join(cluster_recs))
 
-    # the strip path: each (material, palette) one strip of its clusters'
-    strip_recs, sn = [], 0
-    for (li, mi, pi), lst in sorted(strips_by_group.items()):
+    # the strip path: each (material, outfit mask, palette) one strip of its clusters'
+    strip_recs, strip_masks, sn = [], [], 0
+    for (li, mi, om, pi), lst in sorted(strips_by_group.items()):
+        strip_masks.append(om)
         seq = list(lst[0])
         for s in lst[1:]:
             seq += [seq[-1], s[0]] + s
@@ -986,7 +1003,8 @@ def main():
                     ds.append(math.sqrt(sum((p[c] - mean[c] - axis[c] * t) ** 2
                                             for c in range(3))))
                 ds.sort()
-                return ds[int(n * 0.8)], t0, t1, axis
+                # the radius: out to the surface but its last few vertices
+                return ds[int(n * 0.95)], t0, t1, axis
             # the bone, unless the main direction fits clearly closer
             fits = [fit(ax, bone) for ax, bone in axes]
             r, t0, t1, axis = min(fits, key=lambda f: f[0] * (1.0 if f is fits[0] else 1 / 1.15))
@@ -1011,6 +1029,20 @@ def main():
         for k in ("SPOS", "SNRM", "SUV", "SRPOS", "SRNRM", "SJNT", "SWGT", "STRIP"):
             S[k] = bytearray()
         nstrip_vert = nstrip = 0
+
+    # ---- the outfits: the names, the mask of each cluster and strip run
+    if outfits:
+        names = b"".join(n.encode()[:15].ljust(16, b"\0") for n in outfits)
+        cm = struct.pack("<%dI" % ncluster, *[m[2] for _, m in clusters][:ncluster])
+        cm += bytes((-len(cm)) % 16)
+        sm = struct.pack("<%dI" % nstrip, *strip_masks[:nstrip])
+        sm += bytes((-len(sm)) % 16)
+        at = 16 + len(names)
+        S["OUTFIT"] = bytearray(struct.pack("<4I", len(outfits), at, at + len(cm), 0) +
+                                names + cm + sm)
+        for k, n in enumerate(outfits):
+            nt = sum(len(ct) for ct, m in clusters if m[2] >> k & 1 and m[1] == 0)
+            print("gltf2mxm: outfit %d %s: %d triangles (level 0)" % (k, n, nt))
 
     # ---- the file
     out = bytearray(HEADER_BYTES)
