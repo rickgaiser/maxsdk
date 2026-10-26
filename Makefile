@@ -154,6 +154,8 @@ $(OUT)/probe/p10_vucopy.elf: PROBE_CFLAGS = -mvu0
 $(OUT)/probe/p11_vu0mix.elf: PROBE_CFLAGS = -mvu0
 $(OUT)/probe/p15_vu0skin.elf: PROBE_CFLAGS = -mvu0 -fapprox-func
 $(OUT)/probe/p16_vu0reg.elf: PROBE_CFLAGS = -mvu0 -fapprox-func
+# all VF registers reserved: the VU0 programs it calls write most of them
+$(OUT)/probe/p17_vu0c.elf: PROBE_CFLAGS = -mvu0 $(foreach r,$(shell seq 1 31),-ffixed-vf$(r))
 
 # A demo's C file finds the headers of its directory and demos/common, and
 # links the data of DEMO_OBJS_<program>.
