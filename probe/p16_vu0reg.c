@@ -1,9 +1,10 @@
 /* VU0 micro mode skinning fed through VF registers, by joint count (one,
-   two, four: probe/vskin1.vsm, pipelined over two register sets), with the
-   vertices read three ways: from main memory, from the scratchpad (toSPR
-   chains of C vertices, double-buffered; the results written to main memory
-   by the EE, as the model demo could: its fromSPR feeds the MFIFO ring), and
-   with the results through the scratchpad too (fromSPR destination chains).
+   two, four: demos/model/vu0skin.vsm, pipelined over two register sets),
+   with the vertices read three ways: from main memory, from the scratchpad
+   (toSPR chains of C vertices, double-buffered; the results written to main
+   memory by the EE, as the model demo does: its fromSPR feeds the MFIFO
+   ring), and with the results through the scratchpad too (fromSPR
+   destination chains).
    Each against model.c's macro mode loop of the joint count; EE cycles a
    vertex. */
 #include <mx/mx.h>
@@ -16,7 +17,7 @@ typedef u64 u64x2 __attribute__((vector_size(16)));
 typedef u8 u8x4 __attribute__((vector_size(4)));
 typedef s8 s8x4 __attribute__((vector_size(4)));
 
-extern const u8 vskin1_vu[], vskin1_vu_end[];
+extern const u8 vu0skin_vu[], vu0skin_vu_end[];
 #define VS1_INIT 0
 #define VS1_P1A 64
 #define VS1_P1B 128
@@ -397,7 +398,7 @@ static const struct {
 
 int main(void) {
   mx_vu_reset(1);
-  mx_vu_load(0, vskin1_vu, (u32)(vskin1_vu_end - vskin1_vu), 0);
+  mx_vu_load(0, vu0skin_vu, (u32)(vu0skin_vu_end - vu0skin_vu), 0);
   VCALLMS(VS1_INIT);
   VU0_WAIT();
   make_in_tags();

@@ -1,13 +1,13 @@
-; VU0 skinning kernels for probe/p16_vu0reg.c: vertices of one, two and
-; four joints fed through VF registers (see probe/vskin0.vsm), pipelined over
-; two register sets. A call does the head of its set's vertex (R; the normal
-; T and its square length S) and the tail of the other set's vertex (its M
-; from that set's T and S). The tail is the same in every program, so the
-; programs of any joint count follow each other in any order (a model's runs
-; of one, two and four joints).
+; VU0 skinning kernels for demos/model/model.c and probe/p16_vu0reg.c:
+; vertices of one, two and four joints fed through VF registers (see
+; probe/vskin0.vsm), pipelined over two register sets. A call does the head
+; of its set's vertex (R; the normal T and its square length S) and the tail
+; of the other set's vertex (its M from that set's T and S). The tail is the
+; same in every program, so the programs of any joint count follow each
+; other in any order (a model's runs of one, two and four joints).
 ;
 ; Data memory: the palette, column k of joint slot j at 32 * k + j.
-; Constants (set by vs1_init): vf31.x 127.
+; Constants (set by vs1_init; or a QMTC2): vf31.x 127.
 ;
 ; Set A: P N J W vf1..vf4, R vf5, M vf6, T vf21, S vf22.
 ; Set B: P N J W vf7..vf10, R vf11, M vf12, T vf23, S vf24.
@@ -15,8 +15,8 @@
 ; (one joint: the raw JNT word, the slot its low byte; else one a field),
 ; W: the weights 0..255 (s32; one joint: none).
 	.section .vutext, "ax", @progbits
-	.globl vskin1_vu
-vskin1_vu:
+	.globl vu0skin_vu
+vu0skin_vu:
 
 ; the tail of the other set's vertex: Q = 127 / |T| (the RSQRT issued at
 ; the start of the program), M = T * Q as integers
@@ -161,5 +161,5 @@ vs1_p4b:
 	skin_p4 vf7, vf8, vf9, vf10, vf11, vf23, vf24, vf21, vf22, vf6
 	end
 
-	.globl vskin1_vu_end
-vskin1_vu_end:
+	.globl vu0skin_vu_end
+vu0skin_vu_end:

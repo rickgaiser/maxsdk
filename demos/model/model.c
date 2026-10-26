@@ -16,10 +16,13 @@
             converter (a skinned model only)
 
    A skinned model animates with every program: mskin skins on VU1, for the
-   others the EE skins the vertices (VU0 macro mode) into the streams they
-   read: a pose at least every k frames (-pose <k>, 2), more often when the
-   EE has the time, in its waits for VU1 (pose_frame); -pose 1: a pose each
-   frame, before it draws. -static: they draw the rest pose.
+   others the EE and VU0 skin the vertices into the streams they read: the
+   clusters by VU0 micro programs fed through VF registers (skin_clusters),
+   the strips (and all with -skin macro) in VU0 macro mode; a pose at least
+   every k frames (-pose <k>, 2), more often when the EE has the time, in its
+   waits for VU1 (pose_frame); -pose 1: a pose each frame, before it draws.
+   -static: they draw the rest pose. At the start all clusters are skinned
+   both ways once, which must give the same (skin_check).
 
    A model with levels of detail (fbx2glb.py --lods) draws each part at the
    level its projected size asks for: level 0 down to a radius of R0 / 2
@@ -1062,6 +1065,235 @@ static void skin_run(int buf, u32 first, u32 n1, u32 n2, u32 n, u32 pal, int str
                   0);
 }
 
+/* ---- skinning with VU0 micro programs ----------------------------------------------- */
+
+/* The clusters skinned by VU0 micro programs (demos/model/vu0skin.vsm,
+   probe/p16_vu0reg.c), fed through VF registers: the EE moves a vertex into
+   one of two register sets (QMTC2) while VU0 runs the program of the other,
+   and takes the results out (SQC2, QMFC2); a program of the vertex's joint
+   count (one, two, four: the cluster's n1, n2 and the rest) also ends the
+   other set's vertex, so a normal comes out one call after its position.
+   The palette is in VU0 data memory (column k of slot j at 32 k + j). A
+   cluster's streams come into the scratchpad by toSPR (a chain of four
+   refs) while the cluster before is skinned. Strips, and -skin macro: the
+   loops above (VU0 macro mode). */
+extern const u8 vu0skin_vu[], vu0skin_vu_end[];
+enum { VS_P1A = 64, VS_P1B = 128, VS_P2A = 192, VS_P2B = 256, VS_P4A = 320, VS_P4B = 384 };
+static int skin_micro = 1;
+static u32 vu0_pal = ~0u, vu0_pal_frames; /* the palette in VU0 memory, of joints_frames */
+static f32x4 vu0_cols[4][32] MX_ALIGNED(64);
+
+#define VCALLMS(a) __asm__ volatile(".word %0" : : "i"(0x4a000038 | (a) << 6) : "memory")
+#define VU0_WAIT() __asm__ volatile(".word 0x4848e801" : : : "$8", "memory") /* cfc2.i $8, vi29 */
+/* A vertex into set A (vf1..vf4) or B (vf7..vf10) as MMI words: P q * 65536
+   (PEXTLH with 0), N n * 2^24; two and four joints: J and W the bytes
+   zero-extended (PEXTLB, PEXTLH with 0); one joint: J the raw word (the
+   program takes its low byte), no W. */
+#define IN_SET(IN, ...) IN(__VA_ARGS__)
+#define SET_A "vf1", "vf2", "vf3", "vf4"
+#define SET_B "vf7", "vf8", "vf9", "vf10"
+#define VS_IN4(P, Nn, J, W, p, n, j, w)                                                            \
+  __asm__ volatile("ldl $8, 7(%0)\n\tldr $8, 0(%0)\n\tlw $9, 0(%1)\n\tlw $10, 0(%2)\n\t"           \
+                   "lw $11, 0(%3)\n\tpextlh $8, $8, $0\n\tpextlb $9, $9, $0\n\t"                   \
+                   "pextlb $10, $0, $10\n\tpextlb $11, $0, $11\n\tpextlh $9, $9, $0\n\t"           \
+                   "pextlh $10, $0, $10\n\tpextlh $11, $0, $11\n\t"                                \
+                   "qmtc2 $8, $" p "\n\tqmtc2 $9, $" n "\n\tqmtc2 $10, $" j "\n\tqmtc2 $11, $" w   \
+                   :                                                                               \
+                   : "r"(P), "r"(Nn), "r"(J), "r"(W)                                               \
+                   : "$8", "$9", "$10", "$11")
+#define VS_IN1(P, Nn, J, W, p, n, j, w)                                                            \
+  (void)(W);                                                                                       \
+  __asm__ volatile("ldl $8, 7(%0)\n\tldr $8, 0(%0)\n\tlw $9, 0(%1)\n\tlw $10, 0(%2)\n\t"           \
+                   "pextlh $8, $8, $0\n\tpextlb $9, $9, $0\n\tpextlh $9, $9, $0\n\t"               \
+                   "qmtc2 $8, $" p "\n\tqmtc2 $9, $" n "\n\tqmtc2 $10, $" j                        \
+                   :                                                                               \
+                   : "r"(P), "r"(Nn), "r"(J)                                                       \
+                   : "$8", "$9", "$10")
+#define VS_IN2 VS_IN4
+/* R of a set's vertex (SQC2), M (QMFC2, PPACH, PPACB, SW) */
+#define VS_R(at, r) __asm__ volatile("sqc2 $" r ", 0(%0)" : : "r"(at) : "memory")
+#define VS_M(at, m)                                                                                \
+  __asm__ volatile("qmfc2 $8, $" m "\n\tppach $8, $0, $8\n\tppacb $8, $0, $8\n\tsw $8, 0(%0)"      \
+                   :                                                                               \
+                   : "r"(at)                                                                       \
+                   : "$8", "memory")
+
+/* The pipeline between calls: where R of the last vertex goes, M of it and
+   of the one before; the set of the next vertex (0: A). Before the first
+   vertex, they point at a sink. */
+static struct {
+  void *r, *m1, *m2;
+  u32 set;
+} VS;
+static f32x4 vs_sink[2] MX_ALIGNED(16);
+
+/* A vertex into set A, then the outputs of the two before it: R of the
+   last (B: vf11) and M of the one before (A, ended by B's program: vf6);
+   for B the other way round. */
+#define VS_STEP_A(IN, PROG, i)                                                                     \
+  IN_SET(IN, pp + 6 * (i), np + 4 * (i), jp + 4 * (i), wp + 4 * (i), SET_A);                       \
+  VCALLMS(PROG);                                                                                   \
+  VS_R(r, "vf11");                                                                                 \
+  VS_M(m2, "vf6");                                                                                 \
+  m2 = m1, m1 = om + (i), r = op + (i)
+#define VS_STEP_B(IN, PROG, i)                                                                     \
+  IN_SET(IN, pp + 6 * (i), np + 4 * (i), jp + 4 * (i), wp + 4 * (i), SET_B);                       \
+  VCALLMS(PROG);                                                                                   \
+  VS_R(r, "vf5");                                                                                  \
+  VS_M(m2, "vf12");                                                                                \
+  m2 = m1, m1 = om + (i), r = op + (i)
+/* n vertices of one joint count: streams pp (RPOS), np, jp, wp; outputs op,
+   om. */
+#define VS_SEG(K)                                                                                  \
+  static void vs_seg##K(const u8 *pp, const u8 *np, const u8 *jp, const u8 *wp, f32x4 *op,         \
+                        s8x4 *om, u32 n) {                                                         \
+    void *r = VS.r, *m1 = VS.m1, *m2 = VS.m2;                                                      \
+    u32 i = 0;                                                                                     \
+    if (VS.set && n) {                                                                             \
+      VS_STEP_B(VS_IN##K, VS_P##K##B, 0);                                                          \
+      i = 1;                                                                                       \
+    }                                                                                              \
+    for (; i + 1 < n; i += 2) {                                                                    \
+      VS_STEP_A(VS_IN##K, VS_P##K##A, i);                                                          \
+      VS_STEP_B(VS_IN##K, VS_P##K##B, i + 1);                                                      \
+    }                                                                                              \
+    if (i < n) {                                                                                   \
+      VS_STEP_A(VS_IN##K, VS_P##K##A, i);                                                          \
+    }                                                                                              \
+    VS.r = r, VS.m1 = m1, VS.m2 = m2, VS.set = (VS.set + n) & 1;                                   \
+  }
+VS_SEG(1)
+VS_SEG(2)
+VS_SEG(4)
+
+/* The palette into VU0 memory (once a pose), 127 for the normals' length
+   (vf31.x), the pipeline empty. */
+static void vs_begin(u32 pal) {
+  if (vu0_pal != pal || vu0_pal_frames != joints_frames) {
+    const f32x4(*pm)[4] = pal_joints(pal);
+    for (u32 j = 0; j < JOINTS; j++)
+      for (int k = 0; k < 4; k++)
+        vu0_cols[k][j] = pm[j][k];
+    mx_vu0_write(0, vu0_cols, 4 * 32);
+    vu0_pal = pal, vu0_pal_frames = joints_frames;
+  }
+  static const float c127[4] MX_ALIGNED(16) = {127, 0, 0, 0};
+  __asm__ volatile("lqc2 $vf31, 0(%0)" : : "r"(c127) : "memory");
+  VS.r = VS.m1 = VS.m2 = vs_sink, VS.set = 0;
+}
+/* The last vertex out: a call of the next set (its tail ends it), the
+   outputs, VU0 done. */
+static void vs_end(void) {
+  void *r = VS.r, *m2 = VS.m1;
+  if (VS.set) {
+    VCALLMS(VS_P1B);
+    VS_R(r, "vf5");
+    VS_M(VS.m2, "vf12");
+    VU0_WAIT();
+    VS_M(m2, "vf6");
+  } else {
+    VCALLMS(VS_P1A);
+    VS_R(r, "vf11");
+    VS_M(VS.m2, "vf6");
+    VU0_WAIT();
+    VS_M(m2, "vf12");
+  }
+}
+
+/* The streams of cluster c into scratchpad buffer b (toSPR: a ref of each,
+   from the quadword it starts in), the places of its vertices there. */
+#define VS_SPR ((u8 *)0x70000000) /* the first 8 KB (FRAME_SPR: the others) */
+static u64x2 vs_tags[2][4] MX_ALIGNED(64);
+static const u8 *vs_at[2][4];
+static void vs_stage(int b, u32 c) {
+  static const u8 bytes[4] = {6, 4, 4, 4};
+  u32 first = M.cl[c].first, nv = M.cl[c].nv, at = 0;
+  u64x2 *t = MX_UNCACHED(vs_tags[b]);
+  u8 *dst = VS_SPR + 1024 * (u32)b;
+  for (int k = 0; k < 4; k++) {
+    const u8 *a = (const u8 *)sec(MXM_RPOS + k) + bytes[k] * first;
+    const u8 *a0 = (const u8 *)((uintptr_t)a & ~(uintptr_t)15);
+    u32 q = (u32)(a + bytes[k] * nv - a0 + 15) / 16;
+    t[k] = (u64x2){mx_dmatag(k < 3 ? MX_TAG_REF : MX_TAG_REFE, q, a0, 0), 0};
+    vs_at[b][k] = dst + at + (a - a0);
+    at += 16 * q;
+  }
+  MX_DMA_REG(MX_CH_TOSPR, SADR) = 1024 * (u32)b;
+  MX_DMA_REG(MX_CH_TOSPR, QWC) = 0;
+  MX_DMA_REG(MX_CH_TOSPR, TADR) = mx_phys(vs_tags[b]);
+  mx_sync();
+  MX_DMA_REG(MX_CH_TOSPR, CHCR) = MX_CHCR_CHAIN | MX_CHCR_STR;
+}
+_Static_assert(MXM_RNRM == MXM_RPOS + 1 && MXM_JNT == MXM_RPOS + 2 && MXM_WGT == MXM_RPOS + 3,
+               "vs_stage takes the streams in this order");
+
+/* Clusters c0 .. c1 - 1 (of palette pal) into buffer buf. */
+static void skin_clusters(int buf, u32 pal, u32 c0, u32 c1, int normals) {
+  if (!skin_micro) {
+    for (u32 c = c0; c < c1; c++)
+      skin_run(buf, M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, pal, 0, normals);
+    return;
+  }
+  if (c0 >= c1)
+    return;
+  vs_begin(pal);
+  int b = 0;
+  vs_stage(0, c0);
+  for (u32 c = c0; c < c1; c++, b ^= 1) {
+    mx_dma_wait(MX_CH_TOSPR);
+    if (c + 1 < c1)
+      vs_stage(b ^ 1, c + 1);
+    const u8 *const *s = vs_at[b];
+    u32 first = M.cl[c].first, n1 = cl_n1[c], n2 = cl_n2[c], n = M.cl[c].nv;
+    f32x4 *op = skin_pos[buf] + first;
+    s8x4 *om = skin_nrm[buf] + first;
+    vs_seg1(s[0], s[1], s[2], s[3], op, om, n1);
+    vs_seg2(s[0] + 6 * n1, s[1] + 4 * n1, s[2] + 4 * n1, s[3] + 4 * n1, op + n1, om + n1, n2);
+    u32 k = n1 + n2;
+    vs_seg4(s[0] + 6 * k, s[1] + 4 * k, s[2] + 4 * k, s[3] + 4 * k, op + k, om + k, n - k);
+  }
+  vs_end();
+}
+
+/* All clusters skinned both ways (a frame of the first animation): macro
+   mode into buffer 0, the micro programs into 1; the vertices that differ
+   (positions by more than 2^-18 of their size, normals by more than 1). */
+static float fabsf_(float a) { return a < 0 ? -a : a; }
+static u32 skin_check(void) {
+  if (!M.skinned || !M.h->ncluster)
+    return 0;
+  joints_frame(0, 7);
+  int micro = skin_micro;
+  for (u32 gi = 0; gi < ngrp[1]; gi++) {
+    const struct group *q = &grp[1][gi];
+    skin_micro = 0;
+    skin_clusters(0, q->pal, q->c, q->e, 1);
+    skin_micro = 1;
+    skin_clusters(1, q->pal, q->c, q->e, 1);
+  }
+  skin_micro = micro;
+  u32 bad = 0;
+  for (u32 v = 0; v < M.h->nvert; v++) {
+    int d = 0;
+    for (int f = 0; f < 3; f++) {
+      float a = skin_pos[0][v][f], b = skin_pos[1][v][f], m = fabsf_(a) > 1 ? fabsf_(a) : 1;
+      int dn = skin_nrm[0][v][f] - skin_nrm[1][v][f];
+      d |= fabsf_(a - b) > m * (1.0f / 262144.0f) || dn > 1 || dn < -1;
+    }
+    if (d && bad++ < 3)
+      mx_printf("model: skin check: vertex %u: %d %d %d / 1000 (%d %d %d) vs %d %d %d (%d %d %d)\n",
+                v, (int)(skin_pos[0][v][0] * 1000), (int)(skin_pos[0][v][1] * 1000),
+                (int)(skin_pos[0][v][2] * 1000), skin_nrm[0][v][0], skin_nrm[0][v][1],
+                skin_nrm[0][v][2], (int)(skin_pos[1][v][0] * 1000), (int)(skin_pos[1][v][1] * 1000),
+                (int)(skin_pos[1][v][2] * 1000), skin_nrm[1][v][0], skin_nrm[1][v][1],
+                skin_nrm[1][v][2]);
+  }
+  skin_rest[0] = skin_rest[1] = 0;
+  mx_printf("model: VU0 micro skinning against macro mode: %u of %u vertices differ\n", bad,
+            M.h->nvert);
+  return bad;
+}
+
 /* This frame's skinning (after mx_frame_begin and joints_frame), of the
    layout drawn. */
 static void skin_frame(void) {
@@ -1084,8 +1316,7 @@ static void skin_frame(void) {
     for (u32 gi = 0; gi < ngrp[1]; gi++) {
       const struct group *q = &grp[1][gi];
       if (rest || (lod_need[q->mat & 0xFF] >> (q->mat >> 8) & 1)) {
-        for (u32 c = q->c; c < q->e; c++)
-          skin_run(skin_buf, M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, q->pal, 0, normals);
+        skin_clusters(skin_buf, q->pal, q->c, q->e, normals);
         n += q->nv;
       }
     }
@@ -1166,12 +1397,12 @@ static int job_step(u32 budget) {
       break;
     if (J.layout == 2) {
       const struct group *q = &grp[1][u];
-      for (; q->c + J.k < q->e && n < budget; J.k++) {
-        u32 c = q->c + J.k;
-        skin_run(back, M.cl[c].first, cl_n1[c], cl_n2[c], M.cl[c].nv, q->pal, 0, J.normals);
-        n += M.cl[c].nv;
-      }
-      if (q->c + J.k < q->e)
+      u32 c0 = q->c + J.k, c1 = c0;
+      for (; c1 < q->e && n < budget; c1++)
+        n += M.cl[c1].nv;
+      skin_clusters(back, q->pal, c0, c1, J.normals);
+      J.k = c1 - q->c;
+      if (c1 < q->e)
         break;
     } else {
       const struct mxm_strip *r = &M.strip[u];
@@ -2002,6 +2233,7 @@ static void record(void) {
 int main(int argc, char **argv) {
   mx_gs_init(SW, SH);
   mx_vu_reset(3);
+  mx_vu_load(0, vu0skin_vu, (u32)(vu0skin_vu_end - vu0skin_vu), 0);
   pipeline_restart();
   mx_frame_idle(pose_idle);
   sh[S_FLAT][0] = MX_VU_SHADER(MFLAT, mflat_vu, mflat_vu_end);
@@ -2038,6 +2270,10 @@ int main(int argc, char **argv) {
     }
     if (!strcmp_(argv[a], "-lodr") && a + 1 < argc) {
       lod_r0 = itof((s32)atou_(argv[++a]));
+      continue;
+    }
+    if (!strcmp_(argv[a], "-skin") && a + 1 < argc) {
+      skin_micro = strcmp_(argv[++a], "macro") != 0;
       continue;
     }
     if (!strcmp_(argv[a], "-pose") && a + 1 < argc) {
@@ -2085,7 +2321,8 @@ int main(int argc, char **argv) {
   return 0;
 #endif
 
-  int fail = want_interactive ? 0 : same_pictures(nshader);
+  int fail = skin_check() != 0;
+  fail |= want_interactive ? 0 : same_pictures(nshader);
 
   /* the counts a second of each shader, both ways */
   V.copies = copies(BENCH_COPIES), V.spin = 0.3f, V.dist = 1.15f * min_dist();
