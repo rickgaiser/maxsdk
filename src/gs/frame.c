@@ -262,9 +262,48 @@ void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
   if (!n)
     return;
   draw_context(s, prim, uni);
+  u32 qw = mx_shader_ibatch_qw(s), am = s->align - 1;
+  if (s->align & am) {
+    for (u32 i = 0; i < n; i++) {
+      u64 *c = mx_frame_reserve(qw);
+      mx_frame_commit(mx_shader_e_ibatch(c, s, streams, &b[i], i == 0));
+    }
+    return;
+  }
+  /* the packets of mx_shader_e_ibatch, from what a draw has once: each
+     input's UNPACK but for its count, its stream's DMA address (linear: the
+     batch's is first * bytes on) */
+  u32 base[MX_SHADER_MAX_IN], bytes[MX_SHADER_MAX_IN], code[MX_SHADER_MAX_IN];
+  for (u32 i = 0; i < s->nin; i++) {
+    const struct mx_shader_in *in = &s->in[i];
+    base[i] = mx_phys(streams[i]), bytes[i] = in->bytes;
+    code[i] = mx_vif_unpack(in->fmt, s->in_at + i, 0,
+                            MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0) |
+                                (in->mask ? MX_UNPACK_MASK : 0));
+  }
+  const u64 ref = mx_dmatag(MX_TAG_REF, 0, 0, 0), stcycl = mx_vif_stcycl(s->item_qw, 1);
+  const u64 counts_lo = mx_dmatag(MX_TAG_CNT, 1, 0, 0);
+  const u64 counts_hi = (u64)mx_vif_stcycl(1, 1) |
+                        (u64)mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG) << 32;
+  const u64 idx_hi = (u64)mx_vif_stcycl(1, 1) |
+                     (u64)mx_vif_unpack(MX_UNPACK_V4_8, s->idx_at, 0,
+                                        MX_UNPACK_FLG | MX_UNPACK_USN) << 32;
   for (u32 i = 0; i < n; i++) {
-    u64 *c = mx_frame_reserve(mx_shader_ibatch_qw(s));
-    mx_frame_commit(mx_shader_e_ibatch(c, s, streams, &b[i], i == 0));
+    const struct mx_ibatch *k = &b[i];
+    u64 *c = mx_frame_reserve(qw);
+    u32 m = (k->nv + am) & ~am, iq = (k->ni + 15u) / 16;
+    c[0] = counts_lo, c[1] = counts_hi;
+    c[2] = k->nv, c[3] = (u64)((k->ni + 3u) / 4) | (u64)k->ni << 32;
+    c += 4;
+    for (u32 j = 0; j < s->nin; j++) {
+      if (s->in[j].mask)
+        c = mx_e_cnt(c, 0, mx_vif_stmask(), s->in[j].mask);
+      c[0] = ref | (m * bytes[j] / 16) | (u64)(base[j] + k->first * bytes[j]) << 32;
+      c[1] = stcycl | (u64)(code[j] | (m & 0xFF) << 16) << 32;
+      c += 2;
+    }
+    c = mx_e_qw(c, mx_dmatag(MX_TAG_REF, iq, k->idx, 0), idx_hi | (u64)((4 * iq) & 0xFF) << 48);
+    mx_frame_commit(mx_e_cnt(c, 0, 0, i == 0 ? mx_vif_mscal(s->entry) : mx_vif_mscnt()));
   }
 }
 
