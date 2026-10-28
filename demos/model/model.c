@@ -36,7 +36,8 @@
    them): the interactive mode at once; -aa: AA1 (the GS draws the edges of
    the triangles with their coverage); -soft, -deflicker: the display filter
    (mx_gs_smooth: half a pixel across, or a line down, blended); -ss [n]:
-   supersampling, n samples a pixel (4, 8, 16, 32; ss_fit). R3: the next of
+   supersampling, n samples a pixel (4, 8, 16, 32; ss_fit); -nocull: each
+   tile draws all clusters, not only those that reach it. R3: the next of
    quality[] (AA1, the filters, supersampling). -cutout: the
    materials with alpha only cut out (alpha test), not blended. -nophys: no
    springs (MXM_PHYS: joints such as hair and cloth pulled towards the
@@ -533,14 +534,19 @@ static float cam_c[3], cam_r[3], cam_u[3], cam_f[3];
    Each tile is drawn ss_j times, moved by less than a target pixel each
    time (ss_jitter), the sprites blended as a running mean: 4 ss_j samples a
    pixel. The target and its Z buffer are where mx_gs_init's Z buffer was.
-   ss_k: the GS's x and y of the tile's centre (2048 without). */
+   One projection for the whole box, its centre ss_c at the GS's ss_k (2048
+   without): a tile only moves the target's XYOFFSET to it, and draws only
+   the clusters whose spheres reach it (ss_bin; -nocull: all). */
 #define SS_W 512
 #define SS_H 256
+#define SS_MAX_TILES 16
 static int ss_j; /* passes a tile, 0: off */
-static float ss_s = 1, ss_k[2] = {2048, 2048};
+static float ss_s = 1, ss_k[2] = {2048, 2048}, ss_c[2];
 static u32 ss_box[4];   /* x0, y0, x1, y1: screen pixels */
 static u32 ss_tiles[2]; /* across, down */
 static struct mx_rt ss_rt;
+static int ss_cull = 1;
+static int ss_cur = -1; /* the tile being drawn, -1: none (the whole screen) */
 /* AA1: the GS draws the edges of the triangles with their coverage as the
    alpha of (Cs - Cd) As + Cd */
 static int aa1;
@@ -593,9 +599,9 @@ static void camera(void) {
 }
 
 /* The screen's box of the scene's sphere (a little larger: the poses), the
-   scale it is drawn at and its tiles. A tile and a pixel or more around it
-   fit the target, and every vertex of the sphere is in the guard band
-   whichever tile of the box is drawn. */
+   scale it is drawn at, its projection and its tiles. A tile and a pixel or
+   more around it fit the target, and every vertex of the sphere is in the
+   guard band. */
 static void ss_fit(void) {
   ss_s = 1, ss_k[0] = ss_k[1] = 2048;
   if (!ss_j)
@@ -623,29 +629,34 @@ static void ss_fit(void) {
     float n = a ? SH : SW;
     s32 b0 = (s32)clampf(lo[a], 0, n - 1), b1 = (s32)clampf(hi[a] + 1, (float)b0 + 1, n);
     ss_box[a] = (u32)b0, ss_box[a + 2] = (u32)b1;
-    float fl = (float)b1 - lo[a], fh = hi[a] - (float)b0;
+    ss_c[a] = itof(b0 + b1) * 0.5f;
+    float fl = ss_c[a] - lo[a], fh = hi[a] - ss_c[a];
     far = fl > far ? fl : far, far = fh > far ? fh : far;
   }
   ss_s = 2 * far > GUARD ? GUARD / far : 2;
+  float dl = (ss_s - 1) * 0.5f;
+  ss_k[0] = 2048 + dl + ss_s * (SW / 2 - ss_c[0]);
+  ss_k[1] = 2048 + dl + ss_s * (SH / 2 - ss_c[1]);
   for (int a = 0; a < 2; a++) {
     float room = itof((a ? SS_H : SS_W) - 4) / ss_s;
     ss_tiles[a] = (u32)(itof((s32)(ss_box[a + 2] - ss_box[a])) / room) + 1;
   }
 }
 
-/* Tile (tx, ty)'s screen box, and ss_k for it. The target's pixel at the
-   screen's (x, y) is SS_W / 2 + ss_s (x - c) + (ss_s - 1) / 2 across, c the
-   tile's centre: the ss_s x ss_s pixels of a screen pixel around its
-   centre. */
-static void ss_tile(u32 tx, u32 ty, u32 *box, float *c) {
+/* Tile (tx, ty)'s screen box, its centre c, and the move of the target's
+   XYOFFSET that puts c at the target's centre (16ths). The target's pixel at
+   the screen's (x, y) is then SS_W / 2 + ss_s (x - c) + (ss_s - 1) / 2 + e
+   across: the ss_s x ss_s pixels of a screen pixel around its centre, e
+   (pixels) what the move is off by its rounding to a 16th. */
+static void ss_tile(u32 tx, u32 ty, u32 *box, float *c, s32 *off, float *e) {
   for (int a = 0; a < 2; a++) {
     u32 b0 = ss_box[a], w = ss_box[a + 2] - b0, n = ss_tiles[a], i = a ? ty : tx;
     box[a] = b0 + w * i / n, box[a + 2] = b0 + w * (i + 1) / n;
     c[a] = itof((s32)(box[a] + box[a + 2])) * 0.5f;
+    float d = ss_s * (c[a] - ss_c[a]) * 16;
+    off[a] = (s32)(d < 0 ? d - 0.5f : d + 0.5f);
+    e[a] = (d - itof(off[a])) * (1 / 16.0f);
   }
-  float dl = (ss_s - 1) * 0.5f;
-  ss_k[0] = 2048 + dl + ss_s * (SW / 2 - c[0]);
-  ss_k[1] = 2048 + dl + ss_s * (SH / 2 - c[1]);
 }
 
 /* Where pass p of n samples within a target pixel (16ths, x and y): n
@@ -716,6 +727,7 @@ static u32 cur_mat = ~0u;
 static struct {
   u32 verts, indices, tris, draws;
   u32 skin, skinned; /* EE cycles of the skinning, vertices skinned */
+  u32 direct;        /* draws sent without their chain (it did not fit) */
 } st_frame;
 static u64 skin_cyc; /* all of them, since the start */
 static u32 skin_nv;
@@ -1938,6 +1950,16 @@ static int use_mfifo = MODEL_MFIFO;
 #define MESH_QW (6u << 10) /* per slot */
 #define MAX_MESH (MAX_GROUP > MAX_STRIP ? MAX_GROUP : MAX_STRIP)
 static u64 mesh_mem[2][2 * MESH_QW] MX_ALIGNED(64);
+/* The slots' memory: mesh_mem, or halves of the rest of file_buf after the
+   models when that is more (mesh_room): supersampling's tiles each build
+   chains of their clusters. */
+static u8 *mesh_at[2] = {(u8 *)mesh_mem[0], (u8 *)mesh_mem[1]};
+static u32 mesh_bytes = sizeof mesh_mem[0];
+static void mesh_room(u8 *p, u32 n) {
+  u32 half = n / 2 & ~63u;
+  if (half > mesh_bytes)
+    mesh_at[0] = p, mesh_at[1] = p + half, mesh_bytes = half;
+}
 static struct mx_pbuf mesh_pb[2];
 static u32 mesh_pb_frame[2]; /* the frame (+ 1) of the buffer's chains */
 static struct mx_chain mesh[MAX_MESH];
@@ -1947,7 +1969,7 @@ static u32 mesh_frame[MAX_MESH]; /* the frame (+ 1) mesh[u] was built for */
 static struct mx_pbuf *mesh_buf(void) {
   u32 f = mx_frame_number() + 1, k = f & 1;
   if (mesh_pb_frame[k] != f) {
-    mx_pbuf_init(&mesh_pb[k], mesh_mem[k], sizeof mesh_mem[k]);
+    mx_pbuf_init(&mesh_pb[k], mesh_at[k], mesh_bytes);
     mesh_pb_frame[k] = f;
   }
   return &mesh_pb[k];
@@ -1956,6 +1978,114 @@ static struct mx_pbuf *mesh_buf(void) {
    not fit: drawn directly then), else 0. */
 static const struct mx_chain *mesh_built(u32 u) {
   return mesh_frame[u] == mx_frame_number() + 1 ? &mesh[u] : 0;
+}
+
+/* ---- supersampling's tiles ------------------------------------------------------------ */
+
+/* The tiles each cluster reaches this frame (bit t: tile t, as ss_draw
+   numbers them), of any copy: its sphere (of the skinned vertices, else the
+   model's), projected, with a margin of 2 target pixels (the bilinear
+   sprite's texel and the jitter). */
+static u16 cl_tiles[MAX_CLUSTER];
+/* A group's chain of the clusters of one tile, built at the tile's first
+   draw (ss_tmesh_at: the frame and tile it is of), and its counts. */
+static struct mx_chain tmesh[MAX_GROUP];
+static u32 tmesh_at[MAX_GROUP], tmesh_n[MAX_GROUP], tmesh_nv[MAX_GROUP], tmesh_ni[MAX_GROUP],
+    tmesh_tris[MAX_GROUP];
+static u32 tile_stamp(void) { return (mx_frame_number() + 1) << 5 | (u32)(ss_cur + 1); }
+
+/* Whether group q is drawn this frame by some copy (its level, the outfit). */
+static int grp_drawn(const struct group *q) {
+  return worn(q->mask) && (lod_need[q->mat & 0xFF] >> (q->mat >> 8) & 1);
+}
+
+/* Cluster k's sphere in model space (skinned: of this frame's vertices). */
+static void cl_sphere(u32 k, float *sp) {
+  const struct mxm_cluster *cl = &M.cl[k];
+  if (!M.skinned) {
+    for (int i = 0; i < 4; i++)
+      sp[i] = cl->sphere[i];
+    return;
+  }
+  const f32x4 *v = skin_pos[skin_buf] + sk_at[skin_buf][k];
+  f32x4 lo = v[0], hi = v[0];
+  for (u32 i = 1; i < cl->nv; i++)
+    for (int a = 0; a < 3; a++) {
+      lo[a] = v[i][a] < lo[a] ? v[i][a] : lo[a];
+      hi[a] = v[i][a] > hi[a] ? v[i][a] : hi[a];
+    }
+  float r2 = 0;
+  for (int a = 0; a < 3; a++) {
+    float h = (hi[a] - lo[a]) * 0.5f;
+    sp[a] = lo[a] + h, r2 += h * h;
+  }
+  sp[3] = sqrtf_(r2);
+}
+
+static void ss_bin(void) {
+  u32 nt = ss_tiles[0] * ss_tiles[1];
+  float tr[SS_MAX_TILES][4], dl = (ss_s - 1) * 0.5f, mg = 2;
+  for (u32 t = 0; t < nt; t++) {
+    u32 b[4];
+    float c[2], e[2];
+    s32 off[2];
+    ss_tile(t % ss_tiles[0], t / ss_tiles[0], b, c, off, e);
+    for (int a = 0; a < 4; a++)
+      tr[t][a] = 2048 + dl + ss_s * (itof((s32)b[a]) - ss_c[a & 1]) + (a < 2 ? -mg : mg);
+  }
+  static float mv[MAX_COPIES][4][4];
+  float light[3], eye[3], k = R / M.h->radius, step = 2.4f * R,
+                          o = -step * itof(V.copies - 1) * 0.5f;
+  for (int z = 0; z < V.copies; z++)
+    for (int x = 0; x < V.copies; x++)
+      mvp_of(mv[z * V.copies + x], o + step * itof(x), o + step * itof(z), light, eye);
+  for (u32 gi = 0; gi < ngrp[0]; gi++) {
+    const struct group *q = &grp[0][gi];
+    if (!grp_drawn(q))
+      continue;
+    for (u32 cl = q->c; cl < q->e; cl++) {
+      float sp[4];
+      cl_sphere(cl, sp);
+      u32 bits = 0;
+      for (int i = 0; i < V.copies * V.copies && bits != (1u << nt) - 1; i++) {
+        const float (*m)[4] = mv[i];
+        float p[4];
+        for (int r = 0; r < 4; r++)
+          p[r] = m[0][r] * sp[0] + m[1][r] * sp[1] + m[2][r] * sp[2] + m[3][r];
+        float rw = sp[3] * k, w = p[3] - rw;
+        if (w < NEAR_Z) {
+          bits = (1u << nt) - 1;
+          break;
+        }
+        /* x (and y) of the sphere's points: the centre's, off by at most
+           rw (s FX + |the centre's x from the axis|) / w */
+        float gx = p[0] / p[3], gy = p[1] / p[3];
+        float rx = rw * (ss_s * FX + fabsf_(gx - ss_k[0])) / w;
+        float ry = rw * (ss_s * FY + fabsf_(gy - ss_k[1])) / w;
+        for (u32 t = 0; t < nt; t++)
+          if (gx + rx >= tr[t][0] && gx - rx <= tr[t][2] && gy + ry >= tr[t][1] &&
+              gy - ry <= tr[t][3])
+            bits |= 1u << t;
+      }
+      cl_tiles[cl] = (u16)bits;
+    }
+  }
+}
+
+/* The clusters of group q in tile ss_cur into out (where this frame's pose
+   has them: ee), counted into tmesh_*[gi]; returns how many. */
+static u32 tile_batches(u32 gi, const struct mx_ibatch *b, int ee, struct mx_ibatch *out) {
+  const struct group *q = &grp[0][gi];
+  u32 n = 0, nv = 0, ni = 0, tris = 0, bit = 1u << ss_cur;
+  for (u32 k = q->c; k < q->e; k++)
+    if (cl_tiles[k] & bit) {
+      out[n] = b[k];
+      if (ee)
+        out[n].first = sk_at[skin_buf][k];
+      n++, nv += M.cl[k].nv, ni += M.cl[k].ni, tris += cl_tris[k];
+    }
+  tmesh_n[gi] = n, tmesh_nv[gi] = nv, tmesh_ni[gi] = ni, tmesh_tris[gi] = tris;
+  return n;
 }
 
 static void draw_copy(float ox, float oz, const u8 *lod) {
@@ -1982,32 +2112,49 @@ static void draw_copy(float ox, float oz, const u8 *lod) {
         u32 mat = q->mat & 0xFFu, n = 0;
         if ((pass != P_SOLID) != (tex && blended(mat)) || q->mat >> 8 != lod[mat] || !worn(q->mask))
           continue;
-        const struct mx_chain *ch = use_mfifo ? 0 : mesh_built(gi);
+        /* a tile's: only the clusters that reach it */
+        int tiled = ss_cur >= 0 && ss_cull;
+        const struct mx_chain *ch = use_mfifo ? 0
+                                    : tiled   ? (tmesh_at[gi] == tile_stamp() ? &tmesh[gi] : 0)
+                                              : mesh_built(gi);
         int call = ch && !mx_chain_empty(ch);
-        n = q->e - q->c;
-        if (ee && !call)
-          for (u32 k = q->c; k < q->e; k++) {
-            in[k - q->c] = b[k];
-            in[k - q->c].first = sk_at[skin_buf][k];
-          }
-        st_frame.verts += q->nv, st_frame.indices += q->ni;
-        st_frame.tris += pass == P_EDGE ? 0 : q->tris;
+        const struct mx_ibatch *bat = tiled || ee ? in : b + q->c;
+        if (tiled) {
+          n = call ? tmesh_n[gi] : tile_batches(gi, b, ee, in);
+          st_frame.verts += tmesh_nv[gi], st_frame.indices += tmesh_ni[gi];
+          st_frame.tris += pass == P_EDGE ? 0 : tmesh_tris[gi];
+        } else {
+          n = q->e - q->c;
+          if (ee && !call)
+            for (u32 k = q->c; k < q->e; k++) {
+              in[k - q->c] = b[k];
+              in[k - q->c].first = sk_at[skin_buf][k];
+            }
+          st_frame.verts += q->nv, st_frame.indices += q->ni;
+          st_frame.tris += pass == P_EDGE ? 0 : q->tris;
+        }
         if (n) {
           if (!use_mfifo && !ch) {
-            mx_shader_imesh(&mesh[gi], mesh_buf(), s, st, ee ? in : b + q->c, n);
-            mesh_frame[gi] = mx_frame_number() + 1;
-            call = !mx_chain_empty(&mesh[gi]);
+            struct mx_chain *mc = tiled ? &tmesh[gi] : &mesh[gi];
+            mx_shader_imesh(mc, mesh_buf(), s, st, bat, n);
+            if (tiled)
+              tmesh_at[gi] = tile_stamp();
+            else
+              mesh_frame[gi] = mx_frame_number() + 1;
+            call = !mx_chain_empty(mc);
+            ch = mc;
           }
           if (tex && (mat | (u32)pass << 8) != cur_mat)
             gs_state(mat, pass);
           bind(s);
           set_uniforms(shader, m, light, eye, mat);
           mx_dcache_writeback(uni, sizeof uni);
-          if (call)
-            mx_frame_shader_call(s, pass ? prim_blend : prim_solid, uni, &mesh[gi]);
-          else
-            mx_frame_shader_idraw(s, pass ? prim_blend : prim_solid, uni, st, ee ? in : b + q->c,
-                                  n);
+          if (call) {
+            mx_frame_shader_call(s, pass ? prim_blend : prim_solid, uni, ch);
+          } else {
+            mx_frame_shader_idraw(s, pass ? prim_blend : prim_solid, uni, st, bat, n);
+            st_frame.direct += !use_mfifo;
+          }
           st_frame.draws++;
         }
       }
@@ -2175,19 +2322,21 @@ static void ss_draw(int buf, void (*draw)(void)) {
   for (u32 ty = 0; ty < ss_tiles[1]; ty++)
     for (u32 tx = 0; tx < ss_tiles[0]; tx++) {
       u32 b[4];
-      float cc[2];
-      ss_tile(tx, ty, b, cc);
+      float cc[2], e[2];
+      s32 off[2];
+      ss_tile(tx, ty, b, cc, off, e);
+      ss_cur = (int)(ty * ss_tiles[0] + tx);
       /* the texel at u covers u - 0.5 .. u + 0.5 (16ths) */
       float h = ss_s * 0.5f;
-      u32 u0 = (u32)((SS_W / 2 + ss_s * (itof((s32)b[0]) - cc[0]) + h) * 16 + 0.5f);
-      u32 v0 = (u32)((SS_H / 2 + ss_s * (itof((s32)b[1]) - cc[1]) + h) * 16 + 0.5f);
-      u32 u1 = (u32)((SS_W / 2 + ss_s * (itof((s32)b[2]) - cc[0]) + h) * 16 + 0.5f);
-      u32 v1 = (u32)((SS_H / 2 + ss_s * (itof((s32)b[3]) - cc[1]) + h) * 16 + 0.5f);
+      u32 u0 = (u32)((SS_W / 2 + ss_s * (itof((s32)b[0]) - cc[0]) + h + e[0]) * 16 + 0.5f);
+      u32 v0 = (u32)((SS_H / 2 + ss_s * (itof((s32)b[1]) - cc[1]) + h + e[1]) * 16 + 0.5f);
+      u32 u1 = (u32)((SS_W / 2 + ss_s * (itof((s32)b[2]) - cc[0]) + h + e[0]) * 16 + 0.5f);
+      u32 v1 = (u32)((SS_H / 2 + ss_s * (itof((s32)b[3]) - cc[1]) + h + e[1]) * 16 + 0.5f);
       for (u32 p = 0; p < (u32)ss_j; p++) {
         struct mx_rt t = ss_rt;
         s32 dx, dy;
         ss_jitter(p, (u32)ss_j, &dx, &dy);
-        t.ox = (u32)((s32)t.ox + dx), t.oy = (u32)((s32)t.oy + dy);
+        t.ox = (u32)((s32)t.ox + off[0] + dx), t.oy = (u32)((s32)t.oy + off[1] + dy);
         mx_frame_target(&t, 0);
         c = mx_frame_direct(2 + 5 + 2);
         c = mx_e_ad_tag(c, 1, 0);
@@ -2211,7 +2360,7 @@ static void ss_draw(int buf, void (*draw)(void)) {
         mx_frame_commit(c);
       }
     }
-  cur_mat = ~0u;
+  cur_mat = ~0u, ss_cur = -1;
   /* the HUD into the frame's buffer, without Z */
   mx_frame_target(&fb, 0);
 }
@@ -2221,12 +2370,7 @@ static void frame(float t) {
   V.dist = clampf(V.dist, min_dist(), 20 * grid_radius());
   camera();
   ss_fit();
-  if (ss_j) {
-    u32 b[4];
-    float c[2];
-    ss_tile(0, 0, b, c); /* the levels of detail at the scale drawn */
-  }
-  st_frame.verts = st_frame.indices = st_frame.tris = st_frame.draws = 0;
+  st_frame.verts = st_frame.indices = st_frame.tris = st_frame.draws = st_frame.direct = 0;
   int buf = mx_frame_begin(36, 40, 52);
   {
     /* (Cs - Cd) As + Cd (blended passes, AA1), and the alpha test of the
@@ -2251,6 +2395,8 @@ static void frame(float t) {
       lod_choose(mvp, lod_sel[z * V.copies + x]);
     }
   pose_frame(t, af);
+  if (ss_j && ss_cull && ix_now())
+    ss_bin();
   if (ss_j)
     ss_draw(buf, draw_copies);
   else
@@ -2729,6 +2875,24 @@ static void shots(void) {
       if (mx_gs_save_tga((int)(last & 1), name) < 0)
         mx_printf("model: %s could not be written\n", name);
       pipeline_restart();
+      /* the tiles' clusters: the same picture as with all of them drawn */
+      if (mode[m].ss) {
+        u32 nv[2], dr[2], diff = 0;
+        for (int c = 0; c < 2; c++) {
+          ss_cull = !c;
+          frame(0.5f);
+          frame(0.5f);
+          nv[c] = st_frame.verts, dr[c] = st_frame.direct;
+          if (picture(line_hash[c]) < 0)
+            mx_printf("model: %s: no picture\n", name);
+        }
+        ss_cull = 1;
+        for (u32 y = 0; y < SH; y++)
+          diff += line_hash[0][y] != line_hash[1][y];
+        mx_printf("model: %s: culled %u vertices drawn, all %u; %u lines differ; %u, %u draws "
+                  "without a chain\n",
+                  name, nv[0], nv[1], diff, dr[0], dr[1]);
+      }
       /* the time a frame takes, without vsync */
       mx_frame_vsync(0);
       frame(0.5f);
@@ -2825,6 +2989,10 @@ int main(int argc, char **argv) {
       mx_gs_smooth(MX_SMOOTH_DOWN);
       continue;
     }
+    if (!strcmp_(argv[a], "-nocull")) {
+      ss_cull = 0;
+      continue;
+    }
     if (!strcmp_(argv[a], "-ss")) {
       u32 n = a + 1 < argc && argv[a + 1][0] >= '0' && argv[a + 1][0] <= '9' ? atou_(argv[++a]) : 4;
       ss_set(n == 8 || n == 16 || n == 32 ? n : 4);
@@ -2845,6 +3013,7 @@ int main(int argc, char **argv) {
   }
   if (!nmodel)
     model_add(model_fox, (u32)(model_fox_end - model_fox), "fox");
+  mesh_room(file_buf + used, MAX_FILE - used);
   int nshader = use_model(0);
   if (nshader < 0) {
     MX_TEST_END(1);
