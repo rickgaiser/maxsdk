@@ -28,6 +28,8 @@ then to VU0 micro mode (HLSL compute). Toolchain: the feature tree (`r5900-featu
 | 20 | VU (HLSL) | cannot select | `docs/llvm-issues/mscei-adc-lane.hlsl`: an output's int lane from an input's lane (`o.xyz2.w = v.nrm.w`): `Cannot select: v4f32 = bitcast (v8i16 BUILD_VECTOR ...)` | fixed (b542386063ac): an integer shuffle whose fields stay in place is a MERGE (MOVE<mask>, exact): `move.w` from the input, 17 cycles |
 | 21 | VU (HLSL) | missing feature | fields of a constant in an *integer* input (`int3 uv : TEXCOORD_V2_16` with z = 4096): only float inputs of 32-bit formats get fields of 1.0. mscei's GIF_ST needs an ADDQ for its q without it, or 8-byte texture coordinates | fixed (b542386063ac): `_F<n>` after the format of an integer input (`int3 uv : TEXCOORD_V2_16_F4096`): the VIF sets the other fields from ROW (STMASK 01), the header's `ROW` gives the values and `mx_shader_e_context` sends them (STROW). Also fixed on the way: an int3 widened to int4 crashed type legalization (v6i32). mscei/msceic/mskin use it: mscei_ix 21 → 20, msceic 22 → 21, mskin 88 → 86 cycles a vertex (issue 21's shader: 18); mtex stays on int2 (48 instead of 44 with it: the loop's registers after allocation) |
 | 22 | VU (HLSL) | slow code | the strip programs' input and output buffers are apart (MSCEI_MAX_N 81): ~100 cycles of each batch are prologue, epilogue and the two vertices repeated from the batch before (~6 % of mscei at 81 vertices) | dropped (2026-10-26, agreed with the user): with the outputs over the inputs, VIF1 unpacks batch k + 2 into the buffer whose GIF packet (batch k) the GIF may still read: TOPS swaps when batch k + 1 starts, not when the GIF is done (the same as the init MSCAL found on the PS2, `docs/vu1.md`). Safe forms cost more than the ~6 %: a FLUSH before each batch (no overlap of UNPACK and VU1), or one shared packet with an XGKICK wait at each batch start (the indexed layout; 4-6 % for the wait alone at the init) |
+| 23 | VU (HLSL) | crash | `docs/llvm-issues/msceic-adc-flag-crash.hlsl`: msceic's clip ADC combined with the strip restart flag of an input lane (`vu::adc(...) \| asint(v.pos.w)`, also `+`, `max`, `>> 15 & 1`): `Operand not processed? i16 = srl ..., 15` | open; msceic uses the float `max(clipped * 2056, w)` through FTOI4 (26.2 cycles a vertex, was 25) |
+| 24 | VU (HLSL) | slow code | `docs/llvm-issues/mscei-flag-copies.hlsl`: the restart flag from the position's w costs mscei 4 cycles a vertex (20 → 24), mtex 4 (43 → 47): the register copies of the pipelined loop take words of their own | open |
 
 Changes after the 22:00 build (feature tree, uncommitted): the narrowed ILW of mskin's joint
 indices kept no alias scopes (VUNarrowInt), which made a false 110-cycle recurrence; joint row
@@ -365,6 +367,51 @@ Not compiler work, for the record: the demo's strips are short (they are cut ins
 32-vertex clusters: 4.9 triangles a strip for Queen Marika, 1.81 strip vertices a triangle),
 and each join repeats two vertices; the ADC restart (20) instead of the repeats saves ~22 % of
 the vertices.
+
+## 23-24. The strip restart flag (ADC) in the model's programs
+
+The model demo's strips (2026-10-27): each part of the model is strips of all its triangles,
+one after the other, the first two vertices of each strip with ADC (no triangle ends there)
+instead of two repeated vertices per join (gltf2mxm.py, demos/model/mxm.h). The flag is the
+position's w: 2056.0 (bits 0x45008000, FTOI4 0x8080: both have bit 15, the ADC bit), else 0;
+V4-32 in strips, 1.0 from the VIF (STMASK, COL) for the indexed V3-32 positions. The
+`toolchain/build/llvm` build (b542386063ac), loop cycles a vertex:
+
+| program | before | `o.xyz2.w = asint(v.pos.w)` | w through FTOI4 | the normal's w (`o.xyz2.w = v.nrm.w`) |
+|---|---|---|---|---|
+| mflat (4 vertices) | 28 | 27 | 30 | (no normal) |
+| mlit | 40 | 40 | 40 | 42 |
+| mtex | 43 | 47 | 47 | 47 |
+| mscei | 20 | 24 | 26 | 23 |
+| msceic | 25 | crash (23) | 26.2 (`max(float(clipped) * 2056, w)`) | |
+
+- 23: `docs/llvm-issues/msceic-adc-flag-crash.hlsl`. Any integer combination of `vu::adc(...)`
+  (or of `vu::clipped(...)`) with a lane of the input stops llc in type legalization:
+  `Operand not processed? t138: i16 = srl t303, Constant:i16<15>` (LegalizeTypes.cpp:477); the
+  release build recurses in `VectorLegalizer::LegalizeOp` until the stack runs out. The same with
+  `|`, `+`, `max`, and `vu::adc(vu::clipped(0x3FFFF) | (asuint(v.pos.w) >> 15 & 1))`. Expected: the
+  lane to a VI register (MTIR) and an IOR with the clip result, or the clip result's 0x8000 ORed
+  into the lane (lower pipe).
+- 24: `docs/llvm-issues/mscei-flag-copies.hlsl`. The only change to mscei is the flag
+  (`float4 pos : POSITION_V3_32`, `o.xyz2.w = asint(v.pos.w)`: one MOVE.w). The position, read
+  at the start of an iteration, is now live to its end; the pipeliner keeps II 20 with two
+  copies, and the copies come out as two `NOP / MOVE.xyzw` words (and the loop 24 words) instead
+  of lower slots of the 20 words, most of which are NOP. A second `LQ.w` of the position for the
+  output would also do. mtex: 43 → 47 the same way.
+
+Even so the strips are faster: Queen Marika in FullClothes is 1.27 strip vertices a triangle
+(was 1.81 with the repeats), so mscei ~30 cycles a triangle (was ~36); ~25 with 24 fixed.
+
+## 25. `(float)` of an unsigned int calls `__addsf3`
+
+```c
+float f(unsigned x) { return (float)x; } /* clang --target=mips64el -mcpu=r5900 -O2 */
+```
+
+gives two `cvt.s.w` (the halves of the expansion of `uitofp`) and a call to `__addsf3`
+for the add, instead of `add.s`. maxsdk links no soft-float library, so the link fails
+(`undefined symbol: __addsf3`). Found in demos/model (ss_present); worked around with
+`itof((s32)x)`, as the demo already does elsewhere.
 
 ## Cost of V3-16 positions in the indexed programs (not a compiler bug)
 

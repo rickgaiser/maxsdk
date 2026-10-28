@@ -15,7 +15,11 @@ cbuffer Uniforms {
 };
 
 struct In {
-    float3 pos : POSITION;
+    // w: 2056.0 where a strip restarts, else 0: its bits (0x45008000) and
+    // its FTOI4 (0x8080) have bit 15, XYZ2's ADC (no triangle ends at
+    // this vertex); V4-32 in strips, 1.0 from the VIF when the demo
+    // sends V3-32 (indexed)
+    float4 pos : POSITION_V3_32;
     int4 nrm : NORMAL_V4_8;
     int3 uv : TEXCOORD_V2_16_F4096; // z = 4096 (1.0) from the VIF: (s q, t q, q)
 };
@@ -28,7 +32,7 @@ struct Out {
 
 [shader("vertex")]
 Out msceic(In v) {
-    float4 p = mul(mvp, float4(v.pos, 1));
+    float4 p = mul(mvp, float4(v.pos.xyz, 1));
     float q = rcp(p.w);
     float3 t = p.xyz * q;
     float3 n = float3(v.nrm.xyz);
@@ -42,8 +46,9 @@ Out msceic(In v) {
     {
         // t first, as mscei: the same picture
 #pragma clang fp reassociate(off)
-        o.xyz2 = vu::ftoi4(float4(t * scl.xyz + prm.xyz, 0));
+        // ADC also where the triangle is clipped
+        o.xyz2 = vu::ftoi4(float4(t * scl.xyz + prm.xyz,
+                                  max(float(vu::clipped(0x3FFFF)) * 2056.0f, v.pos.w)));
     }
-    o.xyz2.w = vu::adc(vu::clipped(0x3FFFF));
     return o;
 }

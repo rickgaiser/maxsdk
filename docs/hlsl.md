@@ -81,7 +81,8 @@ VU1 cycles an index for 3 outputs). A vertex that the triangles share is transfo
 | Switching programs | `mx_frame_shader_setup` waits (FLUSH) until the packets of the last program are read: the layouts overlap |
 
 Batches of N = 32: `lvl2` 176 indices, `mtex` 192, `mskin` (103 uniform quadwords) 96. The model
-demo (`demos/model/model.c`, `tools/model/gltf2mxm.py`) makes its clusters for the smallest.
+demo (`demos/model/model.c`, `tools/model/gltf2mxm.py`) makes its clusters for the smallest of its
+programs (`mtex`, `mscei`: 192).
 
 ## Compute programs (VU0 or VU1)
 
@@ -121,7 +122,7 @@ is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 | `demos/procgen/tf0..2.hlsl`, `water.hlsl`, `tree.hlsl`, `dustdraw.hlsl` | VU1 | procgen terrain, water, trees, dust sprites | `tests/ps2/shader2.c`, `tests/ps2/dust.c` |
 | `demos/procgen/fbm.hlsl` | VU0 | terrain noise | `tests/ps2/noise.c` |
 | `demos/procgen/dust.hlsl` | VU0 | dust motes | `tests/ps2/dust.c` |
-| `demos/model/mflat.hlsl`, `mlit.hlsl`, `mtex.hlsl`, `mskin.hlsl` | VU1, also indexed | the model demo: colour; one light; texture; skinning (4 joints of a 24-joint palette) | `tests/ps2/ishader.c` (indexed = strips bit for bit, every batch size; mskin against the EE), `demos/model/model.c` (the same picture both ways) |
+| `demos/model/mflat.hlsl`, `mlit.hlsl`, `mtex.hlsl`, `mskin.hlsl` | VU1, also indexed | the model demo: colour; one light; texture (mskin, skinning with 4 joints of a 24-joint palette: only a test, the demo skins on the EE) | `tests/ps2/ishader.c` (indexed = strips bit for bit, every batch size; mskin against the EE), `demos/model/model.c` (the same picture both ways) |
 | `lvl0..2` indexed | VU1 | | `tests/ps2/ishader.c` |
 | `tests/ps2/floor.hlsl`, `nest.hlsl` | VU0 | floor, nested run-time loops | `tests/ps2/floor.c`, `tests/ps2/loops.c` |
 | `demos/vumax/vh_*.hlsl` | VU1 | the twins of vumax's hand kernels: flat, Gouraud, textured, one light, SCEI (three lights, clipping) | `demos/vumax/vumax.c` part 1 (every batch size, against the EE) |

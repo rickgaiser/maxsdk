@@ -35,6 +35,7 @@ Each demo has its own directory in `demos/` (`demos/common/`: what several use):
 | `procgen` (`procgen.c`, `levels.c`) | generated terrain flight, the VU1 shader levels |
 | `model` | a glTF model (`tools/model/gltf2mxm.py`; built in: the Khronos Fox), turning and walking, drawn with HLSL shaders as strips or indexed (`opt -vu-indexed`), up to 16 × 16 copies; the vertices and triangles a second of each. `ps2client execee host:model.elf host:<model>.mxm` loads another model. `make model-record` builds `model_rec1.elf` / `model_rec8.elf`, which save 90 frames as `host:rec_*.tga` (`tools/model/frames2video.py` makes a GIF or MP4) |
 | `vumax` | the VU1 vertex rate at the floor for six standard vertex programs (flat, Gouraud, textured, one light, lit + textured, ps2gl's SCEI): hand-scheduled kernels (`tools/vusched/vusched.py`) against the EE for every batch size, then throughput with and without the GS, next to the same programs in HLSL ([docs/vu1.md](docs/vu1.md)). Options: `s<k>` one scenario, `t` throughput only, `k` kernels alone, `c` plain DMA chain |
+| `display` | every video mode (NTSC/PAL interlaced and progressive, 480p, 576p, 720p, 1080i, VESA) with the picture's edge marked, and the two read circuits merged: an overlay over 2x magnified animation, a crossfade, a fade to black, the smooth filter. Pad: left/right mode, square scene, d-pad/L1/R1 move the picture; without a press it shows each once and exits |
 | `gsmax` | the GS at the rates of the GS manual's performance tables (setup per primitive type, fill rate), over PATH1 ([docs/gif-gs.md](docs/gif-gs.md)) |
 
 The model converter needs Python 3 and Pillow.
@@ -67,8 +68,9 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | `include/mx/` | public headers; `hw/` is generated from `gen/hw_desc.py` |
 | `src/base/` | syscall stubs, startup, mini C runtime, printf, SIF tty client, cache ops |
 | `src/irq/`, `src/dma/` | interrupt dispatcher, DMA channels and the DMA engine |
-| `src/pkt/`, `src/gs/` | DMA/VIF/GIF packets, GS setup and interrupts |
+| `src/pkt/`, `src/gs/` | DMA/VIF/GIF packets, chains (`<mx/chain.h>`: built once, sent or called many times), GS setup and interrupts, the VIF packets of HLSL programs and their mesh chains (`shader.c`) |
 | `src/vu/` | VU control, kernels and streaming |
+| `src/gs/video.c`, `rt.c`, `display.c` | video modes (`<mx/video.h>`), render targets in either GS context, also read as textures (`<mx/rt.h>`), what the two read circuits show and how they merge, per frame (`<mx/display.h>`) |
 | `src/gs/frame.c`, `src/sched/`, `src/thread/` | the render pipeline, the scheduler, threads |
 | `libc/`, `compat/ps2sdk/` | picolibc glue, C++ runtime, atomics; the ps2sdk headers bench needs |
 | `crt/`, `ld/` | crt0 and the linker script |

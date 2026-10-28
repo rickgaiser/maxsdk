@@ -214,7 +214,8 @@ ENUMS = [
                 "CLAMP_2": 0x09, "FOG": 0x0A, "XYZF3": 0x0C, "XYZ3": 0x0D, "TEX1_1": 0x14,
                 "TEX1_2": 0x15, "TEX2_1": 0x16, "TEX2_2": 0x17, "XYOFFSET_1": 0x18,
                 "XYOFFSET_2": 0x19, "PRMODECONT": 0x1A, "PRMODE": 0x1B, "TEXCLUT": 0x1C,
-                "SCANMSK": 0x22, "TEXA": 0x3B, "FOGCOL": 0x3D, "TEXFLUSH": 0x3F,
+                "SCANMSK": 0x22, "MIPTBP1_1": 0x34, "MIPTBP1_2": 0x35,
+                "MIPTBP2_1": 0x36, "MIPTBP2_2": 0x37, "TEXA": 0x3B, "FOGCOL": 0x3D, "TEXFLUSH": 0x3F,
                 "SCISSOR_1": 0x40, "SCISSOR_2": 0x41, "ALPHA_1": 0x42, "ALPHA_2": 0x43,
                 "DIMX": 0x44, "DTHE": 0x45, "COLCLAMP": 0x46, "TEST_1": 0x47,
                 "TEST_2": 0x48, "PABE": 0x49, "FBA_1": 0x4A, "FBA_2": 0x4B,
@@ -298,5 +299,6 @@ SYSCALLS = [
     ("mx_bios_sif_set_reg", 0x79, "int (unsigned reg, int value)"),
     ("mx_bios_sif_get_reg", 0x7A, "int (unsigned reg)"),
     ("mx_bios_machine_type", 0x7E, "int (void)"),
+    ("mx_bios_get_gs_dxdy_offset", 0x80, "void (int mode, int *dx, int *dy, int *dw, int *dh)"),
     ("mx_bios_get_memory_size", 0x7F, "int (void)"),
 ]

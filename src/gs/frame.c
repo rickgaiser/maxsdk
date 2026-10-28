@@ -1,3 +1,4 @@
+#include <mx/debug.h>
 #include <mx/dma.h>
 #include <mx/frame.h>
 #include <mx/trace.h>
@@ -12,6 +13,18 @@ static struct {
   int novsync;
   u32 ring_qw;
   int (*idle)(void);
+  /* chain mode: each half is copied (fromSPR) into a slot in memory, and
+     the slot is queued on VIF1 when the next copy starts (or the stream
+     must go out now: kick) */
+  int chain;
+  u64 *slot[MX_FRAME_SLOTS];
+  mx_event ev[MX_FRAME_SLOTS];
+  u8 used[MX_FRAME_SLOTS];
+  u32 nslot, next;
+  int pending;    /* a slot is being copied into, not queued yet */
+  int presenting; /* mx_frame_present: the frame has ended (its FINISH) */
+  u32 pend;
+  struct mx_dmaq q;
 } f;
 
 void mx_frame_vsync(int on) {
@@ -38,12 +51,14 @@ static u32 idle_while(int (*wait)(u32), u32 arg) {
 }
 
 static int ring_full(u32 qwc) { return mx_mfifo_used() + qwc >= f.ring_qw; }
+static int slot_busy(u32 k) { return f.used[k] && !mx_event_done(f.ev[k]); }
 static int not_ready(u32 arg) {
   (void)arg;
   return !mx_frame_ready();
 }
 
-void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
+/* The halves; chain mode keeps a quadword of each for the end tag. */
+static u32 init_halves(void *spr, u32 spr_bytes, int chain) {
   u32 half = spr_bytes / 2 & ~15u;
   if (half > 0x2000)
     half = 0x2000;
@@ -51,14 +66,66 @@ void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
   f.half[1] = (u64 *)((u8 *)spr + half);
   f.half_qw = half / 16;
   f.cur = 0;
+  f.chain = chain;
   f.pos = f.half[0];
-  f.end = f.half[0] + 2 * f.half_qw;
+  f.end = f.half[0] + 2 * (f.half_qw - (u32)chain);
   mx_frame_stats.pushes = mx_frame_stats.wait_ring = mx_frame_stats.wait_buffer = 0;
+  mx_frame_stats.qw = 0;
   mx_frame_stats.idle = 0;
-  f.ring_qw = size / 16;
   mx_gs.first = mx_gs.frames;
   mx_dma_wait(MX_CH_VIF1);
+  return half;
+}
+
+void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes) {
+  init_halves(spr, spr_bytes, 0);
+  f.ring_qw = size / 16;
   mx_mfifo_init(MX_CH_VIF1, ring, size, 1);
+}
+
+int mx_frame_init_chain(void *mem, u32 bytes, void *spr, u32 spr_bytes) {
+  u32 half = init_halves(spr, spr_bytes, 1);
+  f.nslot = bytes / half;
+  if (f.nslot > MX_FRAME_SLOTS)
+    f.nslot = MX_FRAME_SLOTS;
+  if (f.nslot < 2)
+    return -1;
+  /* the DMA writes the slots: no dirty lines of them may be written back
+     over it */
+  mx_dcache_invalidate(mem, f.nslot * half);
+  for (u32 k = 0; k < f.nslot; k++) {
+    f.slot[k] = (u64 *)((u8 *)mem + k * half);
+    f.used[k] = 0;
+  }
+  f.next = 0;
+  f.pending = 0;
+  mx_dmaq_init(&f.q, MX_CH_VIF1);
+  return 0;
+}
+
+/* Queue the slot being copied into, once its copy is done. */
+static void submit(void) {
+  if (!f.pending)
+    return;
+  mx_dma_wait(MX_CH_FROMSPR);
+  f.ev[f.pend] = mx_dmaq_chain(&f.q, f.slot[f.pend], 1);
+  f.used[f.pend] = 1;
+  f.pending = 0;
+}
+
+/* Chain mode: end the current half (n quadwords) with an end tag and copy
+   it into the next slot once that slot has been sent. */
+static void chain_flush(u32 n) {
+  f.pos = mx_e_end(f.pos, 0, 0, 0);
+  submit();
+  u32 k = f.next;
+  f.next = (k + 1) % f.nslot;
+  u32 t0 = mx_count(), busy = idle_while(slot_busy, k);
+  while (slot_busy(k))
+    ;
+  mx_frame_stats.wait_ring += mx_count() - t0 - busy;
+  mx_dma_from_spr(f.slot[k], f.half[f.cur], n + 1);
+  f.pending = 1, f.pend = k;
 }
 
 /* Push the current half into the ring and switch to the other one. The
@@ -68,19 +135,34 @@ static void flush(void) {
   u32 n = (u32)(f.pos - f.half[f.cur]) / 2;
   if (!n)
     return;
-  u32 t0 = mx_count(), busy = idle_while(ring_full, n);
-  mx_mfifo_push(f.half[f.cur], n);
-  mx_frame_stats.wait_ring += mx_count() - t0 - busy;
+  if (f.chain) {
+    chain_flush(n);
+  } else {
+    u32 t0 = mx_count(), busy = idle_while(ring_full, n);
+    mx_mfifo_push(f.half[f.cur], n);
+    mx_frame_stats.wait_ring += mx_count() - t0 - busy;
+  }
   mx_frame_stats.pushes++;
+  mx_frame_stats.qw += n;
   f.cur ^= 1;
   f.pos = f.half[f.cur];
-  f.end = f.pos + 2 * f.half_qw;
+  f.end = f.pos + 2 * (f.half_qw - (u32)f.chain);
+}
+
+/* Everything built so far goes to VIF1 now. */
+static void kick(void) {
+  flush();
+  submit();
 }
 
 void mx_frame_stop(void) {
-  flush();
-  mx_mfifo_push_wait();
-  mx_mfifo_stop();
+  kick();
+  if (f.chain) {
+    mx_dmaq_release(&f.q);
+  } else {
+    mx_mfifo_push_wait();
+    mx_mfifo_stop();
+  }
   mx_gs.counting = 0;
 }
 
@@ -93,17 +175,20 @@ u64 *mx_frame_reserve(u32 qwc) {
 void mx_frame_commit(u64 *end) { f.pos = end; }
 
 int mx_frame_ready(void) {
-  u32 n = mx_gs.frames;
-  if (n < 2)
+  /* frame n draws into the buffers of frame n - d, which are free once
+     frame n - d + 1 is shown (vsync off: drawn, as it is shown at its
+     FINISH) */
+  u32 n = mx_gs.frames, d = mx_gs.ndisp ? mx_gs.ndisp : 2;
+  if (n < d)
     return 1;
-  return f.novsync ? mx_gs.frames_done >= n - 1 : mx_gs.shown >= n;
+  return f.novsync ? mx_gs.frames_done >= n - d + 1 : mx_gs.shown >= n - d + 2;
 }
 
-int mx_frame_begin(u32 r, u32 g, u32 b) {
+u32 mx_frame_begin_n(void) {
   if (!mx_frame_ready()) {
     /* the buffer of frame n - 2 is shown until frame n - 1 replaces it;
        push what is built so far so the GS has it meanwhile */
-    flush();
+    kick();
     u32 t0 = mx_count(), busy = idle_while(not_ready, 0);
     mx_trace(MX_TR_WAIT_BEGIN, 0x100);
     while (!mx_frame_ready())
@@ -111,7 +196,11 @@ int mx_frame_begin(u32 r, u32 g, u32 b) {
     mx_trace(MX_TR_WAIT_END, 0x100);
     mx_frame_stats.wait_buffer += mx_count() - t0 - busy;
   }
-  int buf = (int)(mx_gs.frames & 1);
+  return mx_gs.frames;
+}
+
+int mx_frame_begin(u32 r, u32 g, u32 b) {
+  int buf = (int)(mx_frame_begin_n() & 1);
   u64 *c = mx_frame_direct(14);
   c = mx_gs_e_draw_env(c, buf, 0);
   c = mx_gs_e_clear(c, r, g, b, 1);
@@ -124,12 +213,28 @@ u64 *mx_frame_direct(u32 qwc) {
   return mx_e_cnt(c, qwc, 0, mx_vif_direct(qwc));
 }
 
+void mx_frame_target(const struct mx_rt *t, int ctx) {
+  /* the batches before it are drawn into the old target first */
+  u64 *c = mx_frame_reserve(6);
+  c = mx_e_cnt(c, 5, mx_vif_flush(), mx_vif_direct(5));
+  mx_frame_commit(mx_rt_e_env(c, t, ctx, 1));
+}
+
+void mx_frame_texflush(void) {
+  u64 *c = mx_frame_reserve(3);
+  c = mx_e_cnt(c, 2, mx_vif_flush(), mx_vif_direct(2));
+  c = mx_e_ad_tag(c, 1, 1);
+  mx_frame_commit(mx_e_ad(c, MX_GS_REG_TEXFLUSH, 0));
+}
+
 void mx_frame_wait_path3(void) {
   u64 *c = mx_frame_reserve(1);
   mx_frame_commit(mx_e_cnt(c, 0, mx_vif_flusha(), 0));
 }
 
-void mx_frame_end(void) {
+/* The frame's FINISH. Counted before anything after it can be pushed: the
+   FINISH interrupt only counts frames that were submitted. */
+static void finish(void) {
   u64 *c = mx_frame_reserve(3);
   c = mx_e_cnt(c, 2, mx_vif_flush(), mx_vif_direct(2));
   c = mx_e_ad_tag(c, 1, 1);
@@ -137,7 +242,21 @@ void mx_frame_end(void) {
   mx_frame_commit(c);
   mx_gs.frames++;
   mx_gs.counting = 1;
-  flush();
+}
+
+void mx_frame_present(void) {
+  finish();
+  /* VIF1 stops here; the vblank handler (mx_gs) lets it go on */
+  mx_frame_commit(
+      mx_e_cnt(mx_frame_reserve(1), 0, 0, mx_vif_mark(mx_gs.frames & 0xFFFF) | MX_VIF_IBIT));
+  f.presenting = 1;
+}
+
+void mx_frame_end(void) {
+  if (!f.presenting)
+    finish();
+  f.presenting = 0;
+  kick();
 }
 
 /* ---- VU1 ------------------------------------------------------------------- */
@@ -196,52 +315,6 @@ void mx_frame_vu1_batch(const struct mx_kernel *k, u64 giftag, u64 regs, const v
 
 /* ---- shaders ------------------------------------------------------------------ */
 
-u64 *mx_shader_e_context(u64 *c, const struct mx_shader *s, u32 ctx, u32 prim, const void *uni) {
-  /* one context: the batches before it end first */
-  if (s->nctx == 1)
-    c = mx_e_cnt(c, 0, 0, mx_vif_flushe());
-  c = mx_e_cnt(c, s->ctx_qw, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, ctx, s->ctx_qw, 0));
-  c = mx_e_qw(c, mx_giftag(0, 1, (s32)prim, MX_GIF_FLG_PACKED, s->nreg), s->regs);
-  const u64 *u = uni;
-  for (u32 i = 0; i < s->uni_qw; i++)
-    c = mx_e_qw(c, u[2 * i], u[2 * i + 1]);
-  /* the 1.0 that masked UNPACKs write (mx_shader_in.mask) */
-  if (mx_shader_masks(s)) {
-    c = mx_e_cnt(c, 1, 0, mx_vif_stcol());
-    c = mx_e_w4(c, 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u);
-  }
-  /* the values that they take from ROW (the header's ROW) */
-  if (mx_shader_rows(s)) {
-    c = mx_e_cnt(c, 1, 0, mx_vif_strow());
-    c = mx_e_w4(c, s->row[0], s->row[1], s->row[2], s->row[3]);
-  }
-  /* the program's init (at the first batch) and each batch read it at ITOP */
-  return mx_e_cnt(c, 0, 0, mx_vif_itop(ctx));
-}
-
-u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, const void *const *streams, u32 n,
-                       int first) {
-  u32 m = (n + s->align - 1) / s->align * s->align;
-  c = mx_e_cnt(c, 1, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
-  c = mx_e_w4(c, n, 0, 0, n);
-  /* input i of every vertex goes to quadword i of its item */
-  for (u32 i = 0; i < s->nin; i++) {
-    const struct mx_shader_in *in = &s->in[i];
-#ifdef MX_DEBUG
-    /* DMA drops the low address bits: a stream must start on a quadword */
-    if ((uintptr_t)streams[i] & 15)
-      mx__emit_overflow(__FILE__, __LINE__);
-#endif
-    if (in->mask)
-      c = mx_e_cnt(c, 0, mx_vif_stmask(), in->mask);
-    c = mx_e_ref(c, streams[i], m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
-                 mx_vif_unpack(in->fmt, s->in_at + i, m,
-                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0) |
-                                   (in->mask ? MX_UNPACK_MASK : 0)));
-  }
-  return mx_e_cnt(c, 0, mx_vif_stcycl(1, 1), first ? mx_vif_mscal(s->entry) : mx_vif_mscnt());
-}
-
 void mx_frame_shader_setup(const struct mx_shader *s) {
   /* the programs' layouts differ: the inputs of s, or the uniforms and the
      table of an indexed one, may be where the GIF still reads a packet of
@@ -251,32 +324,6 @@ void mx_frame_shader_setup(const struct mx_shader *s) {
   c = mx_e_vif4(c, mx_vif_offset(s->buf_qw), mx_vif_stcycl(1, 1), 0, 0);
   mx_frame_commit(c);
   mx_frame_mpg(s->code, s->code_bytes, s->entry);
-}
-
-u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, const void *const *streams,
-                        const struct mx_ibatch *b, int first) {
-  u32 m = (b->nv + s->align - 1) / s->align * s->align, iq = (b->ni + 15) / 16;
-  /* the counts: vertices, -, index quadwords (four indices each), indices */
-  c = mx_e_cnt(c, 1, mx_vif_stcycl(1, 1), mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG));
-  c = mx_e_w4(c, b->nv, 0, (b->ni + 3u) / 4, b->ni);
-  for (u32 i = 0; i < s->nin; i++) {
-    const struct mx_shader_in *in = &s->in[i];
-    const u8 *at = (const u8 *)streams[i] + b->first * in->bytes;
-#ifdef MX_DEBUG
-    if ((uintptr_t)at & 15)
-      mx__emit_overflow(__FILE__, __LINE__);
-#endif
-    if (in->mask)
-      c = mx_e_cnt(c, 0, mx_vif_stmask(), in->mask);
-    c = mx_e_ref(c, at, m * in->bytes / 16, mx_vif_stcycl(s->item_qw, 1),
-                 mx_vif_unpack(in->fmt, s->in_at + i, m,
-                               MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0) |
-                                   (in->mask ? MX_UNPACK_MASK : 0)));
-  }
-  /* the indices: 16 bytes are four quadwords of UNPACK V4-8 */
-  c = mx_e_ref(c, b->idx, iq, mx_vif_stcycl(1, 1),
-               mx_vif_unpack(MX_UNPACK_V4_8, s->idx_at, 4 * iq, MX_UNPACK_FLG | MX_UNPACK_USN));
-  return mx_e_cnt(c, 0, 0, first ? mx_vif_mscal(s->entry) : mx_vif_mscnt());
 }
 
 /* The context of the last draw: 0 or 1 (by turns, with two). */
@@ -295,79 +342,45 @@ void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
   if (!n)
     return;
   draw_context(s, prim, uni);
-  u32 qw = mx_shader_ibatch_qw(s), am = s->align - 1;
-  if (s->align & am) {
-    for (u32 i = 0; i < n; i++) {
-      u64 *c = mx_frame_reserve(qw);
-      mx_frame_commit(mx_shader_e_ibatch(c, s, streams, &b[i], i == 0));
-    }
-    return;
-  }
-  /* the packets of mx_shader_e_ibatch, from what a draw has once: each
-     input's UNPACK but for its count, its stream's DMA address (linear: the
-     batch's is first * bytes on) */
-  u32 base[MX_SHADER_MAX_IN], bytes[MX_SHADER_MAX_IN], code[MX_SHADER_MAX_IN];
-  for (u32 i = 0; i < s->nin; i++) {
-    const struct mx_shader_in *in = &s->in[i];
-    base[i] = mx_phys(streams[i]), bytes[i] = in->bytes;
-    code[i] = mx_vif_unpack(in->fmt, s->in_at + i, 0,
-                            MX_UNPACK_FLG | (in->usn ? MX_UNPACK_USN : 0) |
-                                (in->mask ? MX_UNPACK_MASK : 0));
-  }
-  const u64 ref = mx_dmatag(MX_TAG_REF, 0, 0, 0), stcycl = mx_vif_stcycl(s->item_qw, 1);
-  const u64 counts_lo = mx_dmatag(MX_TAG_CNT, 1, 0, 0);
-  const u64 counts_hi = (u64)mx_vif_stcycl(1, 1) |
-                        (u64)mx_vif_unpack(MX_UNPACK_V4_32, 0, 1, MX_UNPACK_FLG) << 32;
-  const u64 idx_hi = (u64)mx_vif_stcycl(1, 1) |
-                     (u64)mx_vif_unpack(MX_UNPACK_V4_8, s->idx_at, 0,
-                                        MX_UNPACK_FLG | MX_UNPACK_USN) << 32;
-  for (u32 i = 0; i < n; i++) {
-    const struct mx_ibatch *k = &b[i];
-    u64 *c = mx_frame_reserve(qw);
-    u32 m = (k->nv + am) & ~am, iq = (k->ni + 15u) / 16;
-    c[0] = counts_lo, c[1] = counts_hi;
-    c[2] = k->nv, c[3] = (u64)((k->ni + 3u) / 4) | (u64)k->ni << 32;
-    c += 4;
-    for (u32 j = 0; j < s->nin; j++) {
-      if (s->in[j].mask)
-        c = mx_e_cnt(c, 0, mx_vif_stmask(), s->in[j].mask);
-      c[0] = ref | (m * bytes[j] / 16) | (u64)(base[j] + k->first * bytes[j]) << 32;
-      c[1] = stcycl | (u64)(code[j] | (m & 0xFF) << 16) << 32;
-      c += 2;
-    }
-    c = mx_e_qw(c, mx_dmatag(MX_TAG_REF, iq, k->idx, 0), idx_hi | (u64)((4 * iq) & 0xFF) << 48);
-    mx_frame_commit(mx_e_cnt(c, 0, 0, i == 0 ? mx_vif_mscal(s->entry) : mx_vif_mscnt()));
+  /* a few batches per reserve: one does not take much of a half */
+  u32 qw = mx_shader_ibatch_qw(s);
+  for (u32 i = 0; i < n; i += 8) {
+    u32 k = n - i < 8 ? n - i : 8;
+    mx_frame_commit(mx_shader_e_idraw(mx_frame_reserve(k * qw), s, streams, b + i, k, i == 0));
   }
 }
 
 void mx_frame_shader_draw(const struct mx_shader *s, u32 prim, const void *uni,
                           const void *const *streams, u32 n) {
-  u32 type = prim & 7, step, size = s->max_n / s->align * s->align;
-  if (type == MX_GS_PRIM_TRISTRIP) {
-    /* the next batch starts with the last two vertices, on an aligned one */
-    size = (s->max_n - 2) / s->align * s->align + 2;
-    step = size - 2;
-  } else {
-    if (type == MX_GS_PRIM_TRIANGLE)
-      while (size % 3)
-        size -= s->align;
-    step = size;
-  }
-  const void *at[MX_SHADER_MAX_IN];
   if (!n)
     return;
+  u32 size, step, nb = mx_shader_batches(s, prim, n, &size, &step);
+  const void *at[MX_SHADER_MAX_IN];
   draw_context(s, prim, uni);
-  for (u32 v = 0; v < n; v += step) {
-    u32 k = n - v < size ? n - v : size;
-    if (type == MX_GS_PRIM_TRISTRIP && v && k < 3)
-      break;
+  for (u32 b = 0, v = 0; b < nb; b++, v += step) {
     for (u32 i = 0; i < s->nin; i++)
       at[i] = (const u8 *)streams[i] + v * s->in[i].bytes;
     u64 *c = mx_frame_reserve(mx_shader_batch_qw(s));
-    mx_frame_commit(mx_shader_e_batch(c, s, at, k, v == 0));
-    if (v + k >= n)
-      break;
+    mx_frame_commit(mx_shader_e_batch(c, s, at, n - v < size ? n - v : size, b == 0));
   }
+}
+
+void mx_frame_call(const struct mx_chain *ch) {
+  if (!f.chain) {
+    mx_printf("mx_frame_call: the frame stream is an MFIFO (mx_frame_init_chain)\n");
+    return;
+  }
+  mx_frame_commit(mx_e_call_chain(mx_frame_reserve(1), ch));
+}
+
+void mx_frame_shader_call(const struct mx_shader *s, u32 prim, const void *uni,
+                          const struct mx_chain *mesh) {
+  /* no batches: no context (draw_context) */
+  if (mx_chain_empty(mesh))
+    return;
+  if (f.chain)
+    draw_context(s, prim, uni);
+  mx_frame_call(mesh);
 }
 
 static u32 comp_hdr[16 * 4] MX_ALIGNED(16);
@@ -399,7 +412,7 @@ int mx_frame_vu1_compute(const struct mx_kernel *k, const void *hdr, const void 
   /* stop after the program has ended, until the EE has read the results */
   c = mx_e_cnt(c, 0, mx_vif_nop() | MX_VIF_IBIT, 0);
   mx_frame_commit(c);
-  flush();
+  kick();
   u32 t0 = mx_count();
   while (!(MX_R32(MX_VIF_VIF1_STAT) & MX_BIT(VIF_STAT_VIS)))
     if (mx_count() - t0 > 300000000u)

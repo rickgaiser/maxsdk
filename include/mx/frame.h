@@ -17,13 +17,15 @@
    not change until the frame that uses it has passed mx_frame_done(). The
    stream itself (headers, GIF tags) is copied into the ring. */
 
+#include <mx/chain.h>
 #include <mx/emit.h>
 #include <mx/gs.h>
 #include <mx/types.h>
 #include <mx/vu.h>
 
 struct mx_frame_stats {
-  u32 pushes;      /* halves pushed into the ring */
+  u32 pushes;      /* halves pushed into the ring (chain mode: copied into slots) */
+  u32 qw;          /* quadwords of stream in them */
   u32 wait_ring;   /* EE cycles waiting for ring space */
   u32 wait_buffer; /* EE cycles in mx_frame_begin waiting for the back buffer */
   u32 idle;        /* EE cycles of the idle work (mx_frame_idle) in those waits */
@@ -37,6 +39,15 @@ extern struct mx_frame_stats mx_frame_stats;
    area for the two halves (at most 8 KiB each). VIF1 belongs to the
    pipeline until mx_frame_stop(). */
 void mx_frame_init(void *ring, u32 size, void *spr, u32 spr_bytes);
+/* The same pipeline in chain mode: the stream may call chains in memory
+   (mx_frame_call, mx_frame_shader_call), which an MFIFO drain cannot. Each
+   half is copied by fromSPR into a slot of mem (slots of half the
+   scratchpad area, at most MX_FRAME_SLOTS; mem quadword aligned, not
+   written by the EE), and the slots go to VIF1 through a DMA queue. The
+   copy of a half runs while the EE builds the next one. Returns 0, or -1 if
+   mem holds fewer than two slots. */
+#define MX_FRAME_SLOTS 16
+int mx_frame_init_chain(void *mem, u32 bytes, void *spr, u32 spr_bytes);
 void mx_frame_stop(void);
 /* Work for the EE while it would wait for ring space or for the back
    buffer: fn is called until the wait is over or it returns 0 (nothing more
@@ -44,9 +55,21 @@ void mx_frame_stop(void);
    not use the frame stream. 0: none. */
 void mx_frame_idle(int (*fn)(void));
 
-/* Begin frame n: waits until its framebuffer is free, then appends the
-   drawing environment for it and a clear. Returns the framebuffer (0/1). */
+/* Begin frame n: waits until its buffers are free (those of display
+   n % d, mx_gs_displays) and returns n. The stream has nothing of it yet:
+   set a target (mx_frame_target) and clear it. */
+u32 mx_frame_begin_n(void);
+/* mx_frame_begin_n, then the drawing environment of mx_gs_init's framebuffer
+   n % 2 in context 1 and a clear (r, g, b). Returns the framebuffer (0/1). */
 int mx_frame_begin(u32 r, u32 g, u32 b);
+/* Draw into target t with context ctx (0, 1) from here on: FLUSH (what came
+   before is drawn into the old target first), then its FRAME, ZBUF,
+   XYOFFSET and SCISSOR. Switching between the two contexts' targets by
+   PRIM.CTXT needs neither. */
+void mx_frame_target(const struct mx_rt *t, int ctx);
+/* Before a target that was drawn into is read as a texture: FLUSH, then
+   TEXFLUSH. */
+void mx_frame_texflush(void);
 /* vsync off: frame n only waits for frame n - 2 to be drawn, not for frame
    n - 1 to be shown, so frames are drawn as fast as the units allow (for
    throughput measurements). Each frame is shown at its FINISH (the display
@@ -64,6 +87,11 @@ MX_INLINE u32 mx_frame_number(void) { return mx_gs.frames; }
    in the current half; returns the cursor. qwc <= half / 16. */
 u64 *mx_frame_reserve(u32 qwc);
 void mx_frame_commit(u64 *end);
+
+/* A CALL of chain ch (a VIF1 chain that ends with ret: mx_chain_close) in
+   the stream; chain mode only. The chain and what it references must not
+   change until the frame has passed mx_frame_done(). */
+void mx_frame_call(const struct mx_chain *ch);
 
 /* GS writes over PATH2: returns a cursor for qwc quadwords of GIF packets
    (tags included); commit them with mx_frame_commit. */
@@ -104,6 +132,15 @@ int mx_frame_vu1_compute(const struct mx_kernel *k, const void *hdr, const void 
 
 /* End the frame: FLUSH (VU1 and PATH1 done), FINISH, push the stream. */
 void mx_frame_end(void);
+/* Present mode, for one shown buffer: the frame was drawn into a target
+   that is not shown (<mx/rt.h>), and what is built from here to
+   mx_frame_end() copies it into the shown buffer (a sprite, a HUD). Ends
+   the frame (FLUSH, FINISH), then stops VIF1 (an I-bit MARK) until the
+   first vblank after the frame's FINISH, or the FINISH itself if that comes
+   early in the vblank (vsync off: at the FINISH). The picture is then
+   drawn before the screen shows its first line; a frame drawn after it
+   waits for it, so it may draw into the same target again. */
+void mx_frame_present(void);
 
 /* ---- shaders (HLSL vertex programs, PLAN_PROCGEN) ---------------------------- */
 
@@ -237,6 +274,14 @@ u64 *mx_shader_e_batch(u64 *c, const struct mx_shader *s, const void *const *str
    before it are drawn (FLUSH): s may use the memory where the GIF still
    reads the packets of another program. */
 void mx_frame_shader_setup(const struct mx_shader *s);
+/* The batches a draw of n vertices as primitive prim (its type, prim & 7) is
+   cut into: batch b starts at vertex b * step and has the rest, at most
+   size. Returns their number. */
+u32 mx_shader_batches(const struct mx_shader *s, u32 prim, u32 n, u32 *size, u32 *step);
+/* All batches of such a draw (what mx_frame_shader_draw sends after the
+   context): mx_shader_batches(..) * mx_shader_batch_qw(s) quadwords. */
+u64 *mx_shader_e_draw(u64 *c, const struct mx_shader *s, u32 prim, const void *const *streams,
+                      u32 n);
 /* Draw n vertices of streams with s in the current frame, as one primitive
    (MX_GS_PRIM_TRISTRIP: batches overlap by 2 vertices; TRIANGLE: batches of
    whole triangles; anything else: batches of any size). prim is the PRIM
@@ -267,10 +312,35 @@ MX_INLINE u32 mx_shader_ibatch_qw(const struct mx_shader *s) {
    (as mx_shader_e_batch). */
 u64 *mx_shader_e_ibatch(u64 *c, const struct mx_shader *s, const void *const *streams,
                         const struct mx_ibatch *b, int first);
+/* n batches of an indexed program (n * mx_shader_ibatch_qw(s) quadwords);
+   first: b[0] is the draw's first (MSCAL). */
+u64 *mx_shader_e_idraw(u64 *c, const struct mx_shader *s, const void *const *streams,
+                       const struct mx_ibatch *b, u32 n, int first);
 /* Draw n batches of an indexed program with the uniforms uni (copied into
    the stream once, with the context). */
 void mx_frame_shader_idraw(const struct mx_shader *s, u32 prim, const void *uni,
                            const void *const *streams, const struct mx_ibatch *b, u32 n);
+
+/* ---- mesh chains --------------------------------------------------------------- */
+
+/* A draw's batches built once, as a chain that ends with ret (<mx/chain.h>):
+   the bytes mx_frame_shader_draw / mx_frame_shader_idraw send after the
+   context. It is tied to the input layout of s (programs with the same
+   inputs, in_at and align can share it), to the primitive type, and to the
+   streams' addresses (not their contents: vertices that change in place,
+   such as skinned ones, keep their chain). Returns 0, or -1 if pb is full. */
+u32 mx_shader_mesh_qw(const struct mx_shader *s, u32 prim, u32 n);
+int mx_shader_mesh(struct mx_chain *ch, struct mx_pbuf *pb, const struct mx_shader *s, u32 prim,
+                   const void *const *streams, u32 n);
+MX_INLINE u32 mx_shader_imesh_qw(const struct mx_shader *s, u32 n) {
+  return n * mx_shader_ibatch_qw(s) + 1;
+}
+int mx_shader_imesh(struct mx_chain *ch, struct mx_pbuf *pb, const struct mx_shader *s,
+                    const void *const *streams, const struct mx_ibatch *b, u32 n);
+/* Draw a mesh chain of s: the context (prim of the chain's primitive type,
+   uniforms uni), then a CALL of the chain (chain mode only). */
+void mx_frame_shader_call(const struct mx_shader *s, u32 prim, const void *uni,
+                          const struct mx_chain *mesh);
 
 /* ---- textures (PATH3) -------------------------------------------------------- */
 

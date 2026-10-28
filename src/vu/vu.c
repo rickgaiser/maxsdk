@@ -149,6 +149,7 @@ static void read_dma(u32 mem, void *dst, u32 addr, u32 qwc, void *spr, u32 bytes
                          : "r"(d + 16 * i), "r"(sp + 16 * i)
                          : "$8", "memory");
     } else {
+      mx_dma_wait(MX_CH_FROMSPR); /* a frame copy (chain mode) */
       mx_dma_from_spr(d, spr, n);
       mx_dma_wait(MX_CH_FROMSPR);
       mx_dcache_invalidate(d, n * 16);

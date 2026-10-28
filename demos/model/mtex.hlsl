@@ -32,7 +32,11 @@ cbuffer Uniforms {
 };
 
 struct In {
-    float3 pos : POSITION;
+    // w: 2056.0 where a strip restarts, else 0: its bits (0x45008000) and
+    // its FTOI4 (0x8080) have bit 15, XYZ2's ADC (no triangle ends at
+    // this vertex); V4-32 in strips, 1.0 from the VIF when the demo
+    // sends V3-32 (indexed)
+    float4 pos : POSITION_V3_32;
     int4 nrm : NORMAL_V4_8;
     int2 uv : TEXCOORD_V2_16;
 };
@@ -45,11 +49,11 @@ struct Out {
 
 [shader("vertex")]
 Out mtex(In v) {
-    float4 p = mul(mvp, float4(v.pos, 1));
+    float4 p = mul(mvp, float4(v.pos.xyz, 1));
     float q = rcp(p.w);
     float3 n = float3(v.nrm.xyz);
     float d = vu_wrap(dot(n, light.xyz));
-    float3 e = eye.xyz - v.pos;
+    float3 e = eye.xyz - v.pos.xyz;
     float s = eye.w * vu_spec(n * (1.0f / 127.0f), light.xyz * 127.0f,
                               e * rsqrt(dot(e, e) + 1e-12f));
     float4 c = amb + lcol * d;
@@ -57,5 +61,6 @@ Out mtex(In v) {
     o.st = float4(vu::itof12(v.uv) * q, q, 0);
     o.rgbaq = int4(min(float4(c.xyz, s), (float4)255));
     o.xyz2 = vu::ftoi4(p * q);
+    o.xyz2.w = asint(v.pos.w);
     return o;
 }

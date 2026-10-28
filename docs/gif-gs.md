@@ -59,6 +59,42 @@ one kick). "side s" = right triangles of s×s/2 pixels in rows; ADC = vertices s
 | The first frame of a run is submitted at any point of the field | its first vblank is not a missed one: `mx_gs.missed` counts from the vblank after the run's first frame is shown | | `demos/procgen/procgen.c` | 2026-10-23 |
 | `mx_gs.slack`: EE cycles from a frame's FINISH to the vblank that shows it | procgen keeps 8–20 % of a field (its view distance follows it) | vsync on | `demos/procgen/procgen.c` | 2026-10-23 |
 
+## Render targets, both contexts, display states (PS2, 2026-10-27, `tests/ps2/rt.c`)
+
+| Fact | Value | Conditions | Source | Date |
+|---|---|---|---|---|
+| Context 2 draws into a second target while context 1 keeps the frame buffer; switching per primitive by PRIM.CTXT alone (no FRAME rewrite, no FLUSH) | correct pixels in both | 128×128 CT32 target, direct sprites (PATH2) | `tests/ps2/rt.c` | 2026-10-27 |
+| A target is read as a texture right after it is drawn, with only a TEXFLUSH (after a VIF FLUSH) between | correct, CT32 and CT16S targets (16-bit expanded as `v << 3`) | TEX0 from `mx_rt_tex0`, decal, nearest | `tests/ps2/rt.c` | 2026-10-27 |
+| Moving context 1 to the target and back (`mx_frame_target`: VIF FLUSH + FRAME/ZBUF/XYOFFSET/SCISSOR) inside a frame | correct, in ring and chain mode | | `tests/ps2/rt.c` | 2026-10-27 |
+| Three display states (`mx_gs_displays(d, 3)`): frame k in buffer k % 3, waits for frame k − 2 to be shown | the three buffers hold the last three frames; 0 vblanks missed | 640×224 CT32 | `tests/ps2/rt.c` | 2026-10-27 |
+| `mx_gs_init` writing DISPFB1/DISPLAY1 = 0 (circuit 1 off) and, after SetGsCrt, all display registers = 0 before the real display | **the PS2 hung or dropped ps2link before the first printf** (twice; PCSX2 fine; once a run passed). Fixed by never writing an off circuit's registers and writing PMODE, DISPFB2, DISPLAY2, BGCOLOR before the GS interrupts are on, as the old init did; which of the two mattered is not isolated | NTSC 640×224 | `tests/ps2/gs.c`, batch | 2026-10-27 |
+| After `mx_video_set` (GS reset) PRMODECONT, COLCLAMP, TEST, TEXA must be written again before drawing | | | `tests/ps2/rt.c`, `demos/display` | 2026-10-27 |
+
+## Video modes (`src/gs/video.c`)
+
+DISPLAY units: DX/DW in VCK, DY/DH in raster lines (frame lines when interlaced). A buffer line
+takes 2 DISPLAY lines in interlaced FRAME mode, else 1; `mx_display_regs` fits the largest
+MAGH/MAGV and centres the rectangle (by whole frames when interlaced).
+
+"Runs": the CRTC gives vblanks and `demos/display` draws in the mode (PS2, BIOS 2.00 PAL slim,
+2026-10-27). "Screen": the picture's position was checked on a screen.
+
+| Mode | SetGsCrt | VCK × lines | DX, DY | Runs | Screen |
+|---|---|---|---|---|---|
+| NTSC 480i / 240p | 0x02 | 2560 × 448 / 224 | 0x27C, 50 / 25 | yes | 480i yes (sceGsSetDefDispEnv's); 240p no |
+| PAL 576i / 288p | 0x03 | 2560 × 512 / 256 | 0x290, 72 / 36 | yes | no |
+| 480p | 0x50 | 1440 × 480 | 232, 35 | yes | no (gsKit's) |
+| 576p | 0x53 | 1440 × 576 | 255, 44 | **no: SetGsCrt returns, no vblank ever comes** | |
+| 720p | 0x52 | 1280 × 720 | 306, 24 | yes | no (gsKit's) |
+| 1080i | 0x51 | 1920 × 1080 | 236, 38 | yes (FRAME mode) | no (gsKit's) |
+| VESA 640/800/1024/1280 | 0x1A, 0x2B, 0x3D, 0x4A | 1280×480, 1600×600, 1024×768, 1280×1024 | gsKit's | yes | no |
+
+A mode without vblanks hung every frame pipeline (each frame waits for the previous one to be
+shown at a vblank): `mx_video_set` now waits up to 100 ms for two vblanks and returns -1.
+
+`demos/display` shows every mode with a border at the picture's edge and lets the offsets be
+moved with the pad (the values are on screen); offsets confirmed there go into this table.
+
 Consequences: the GS draws at most one Gouraud/textured triangle per 8 EE cycles (≈ 615 k
 per 60 Hz frame, 37 M/s). Strips cost one vertex per triangle, so PATH1 sending (2 cycles
 per register) stays under the GS floor up to 4 registers per vertex: PACKED is enough, REGLIST

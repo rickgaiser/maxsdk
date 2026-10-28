@@ -6,6 +6,8 @@ int main(void) {
   test_gen_fields();
   test_pkt();
   test_emit();
+  test_chain();
+  test_video();
   if (test_failures) {
     printf("host tests: %d FAILED\n", test_failures);
     return 1;

@@ -133,6 +133,10 @@ void mx_dmaq_release(struct mx_dmaq *q);
    at once; the event passes when that segment has been transferred. */
 mx_event mx_dmaq_chain(struct mx_dmaq *q, const void *tags, int tte);
 mx_event mx_dmaq_normal(struct mx_dmaq *q, const void *addr, u32 qwc);
+/* mx_dmaq_chain without waiting for a free slot, so it can be called from
+   an interrupt handler (e.g. a scanline trigger). Returns 0 (the event in
+   *e, if e), or -1 if the queue is full. */
+int mx_dmaq_try_chain(struct mx_dmaq *q, const void *tags, int tte, mx_event *e);
 
 MX_INLINE int mx_event_done(mx_event e) { return (s32)(e.q->done - e.seq) >= 0; }
 void mx_event_wait(mx_event e);

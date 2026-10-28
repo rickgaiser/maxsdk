@@ -42,3 +42,11 @@ Correctness notes only. PCSX2 (flatpak 2.5.x) timings are never performance data
 | GS SPRITE with UV at texel edges, 1:1 (the font) | the last column and row of each glyph are not drawn; UV + 8 (half a texel) draws them | drawn either way | procgen screenshots |
 | Debug output of a line written in several writes, or the first lines when the SIF is first used in the middle of GS/DMA set-up | pieces lost (ps2link's udptty: one UDP broadcast per write) | nothing lost | `demos/procgen/levels.c`, `demos/procgen/procgen.c` |
 | procgen max count (no vsync) | 192 fps, 20.5 M vertices/s, VU1 99 % | 290 fps; busy shares 0 % | `demos/procgen/procgen.c` (PCSX2 timings are not data) |
+
+## Chains (PS2 and PCSX2 2.5, 2026-10-27)
+
+| Behaviour | PS2 | PCSX2 | Source |
+|---|---|---|---|
+| MFIFO drain (VIF1, TTE) reads a `call` tag to a chain outside the ring | not followed: the drain stops (CHCR.STR 0, D_STAT.CIS set, CHCR.ASP reads 1); nothing after the call is sent | not followed: the drain stops (CHCR.STR 0, D_STAT.CIS set, CHCR.ASP reads 2); the chain and what follows the call in the ring are not sent | `probe/p18_mfifo_call.c` |
+| The same with a `next` tag | not followed: the drain stops (STR 0, CIS set, ASP 0, TADR on the tag) | not followed: the drain holds at the tag (STR 1, TADR on it) | `probe/p18_mfifo_call.c` |
+| The same with a `ref` tag (the control) | followed, the ring drains | followed, the ring drains | `probe/p18_mfifo_call.c` |

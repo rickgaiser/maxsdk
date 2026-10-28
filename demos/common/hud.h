@@ -93,7 +93,7 @@ static void hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
 }
 
 /* The width in pixels of text s at scale. */
-static u32 hud_width(const char *s, u32 scale) {
+__attribute__((unused)) static u32 hud_width(const char *s, u32 scale) {
   u32 n = 0;
   for (const char *p = s; *p; p++)
     n++;
@@ -102,7 +102,7 @@ static u32 hud_width(const char *s, u32 scale) {
 
 /* A rectangle at (x, y), w x h (pixels, and lines of a 224-line screen),
    blended over what is drawn: rgba (0xAARRGGBB, alpha 0x80 opaque). */
-static void hud_box(u32 x, u32 y, u32 w, u32 h, u32 rgba) {
+__attribute__((unused)) static void hud_box(u32 x, u32 y, u32 w, u32 h, u32 rgba) {
   u64 *c = mx_frame_direct(7);
   c = mx_e_ad_tag(c, 3, 1);
   c = mx_e_ad(c, MX_GS_REG_ALPHA_1, mx_gs_alpha(0, 1, 0, 1, 0));
@@ -136,7 +136,7 @@ static char *hud_u(char *d, u32 v) {
   return d;
 }
 /* v with one decimal of v / div: "12.3" */
-static char *hud_u1(char *d, u64 v, u64 div) {
+__attribute__((unused)) static char *hud_u1(char *d, u64 v, u64 div) {
   u64 t = v * 10 / div;
   d = hud_u(d, (u32)(t / 10));
   *d++ = '.';

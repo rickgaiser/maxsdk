@@ -36,5 +36,5 @@ decision in maxsdk and in the compiler.
 | | |
 |---|---|
 | PS2 | the test PS2 at 192.168.1.10, started by ps2link, programs run with `ps2client execee` |
-| BIOS | to be recorded (`rom0:ROMVER`) by `probe/bios_info.c` |
+| BIOS | ROMVER `0200EC20040614`: 2.00, Europe, consumer, 2004-06-14 (a PAL slim); `probe/bios_info.c`, 2026-10-27 |
 | Clock | EE 294.912 MHz (COP0 Count runs at this rate) |

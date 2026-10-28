@@ -66,6 +66,7 @@ void mx_bios_isif_set_dchain(void);
 int mx_bios_sif_set_reg(unsigned reg, int value);
 int mx_bios_sif_get_reg(unsigned reg);
 int mx_bios_machine_type(void);
+void mx_bios_get_gs_dxdy_offset(int mode, int *dx, int *dy, int *dw, int *dh);
 int mx_bios_get_memory_size(void);
 
 #ifdef __cplusplus

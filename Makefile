@@ -168,7 +168,7 @@ $(OUT)/demos/%.elf: %.c $$(DEMO_OBJS_$$*) $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS)
 
 # The model demo's model, built in (tools/model/gltf2mxm.py: Python 3 and
 # Pillow), made for the indexed programs it draws with.
-MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mscei mskin)
+MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mscei)
 DEMO_OBJS_model := $(OUT)/demos/model/fox_mxm.o
 # model.c: VU0 macro mode; approximate functions for VRSQRT (the skinning's normals)
 $(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf: CFLAGS += -mvu0 -fapprox-func
@@ -301,7 +301,9 @@ batch: $(OUT)/batch/ps2batch.elf
 # ---- host tests -----------------------------------------------------------
 
 # Pure parts of the library are tested on the host too.
-HOST_SRCS := $(wildcard $(HERE)/tests/host/*.c) $(HERE)/src/pkt/pkt.c
+HOST_SRCS := $(wildcard $(HERE)/tests/host/*.c) $(HERE)/src/pkt/pkt.c $(HERE)/src/pkt/chain.c \
+             $(HERE)/src/gs/shader.c $(HERE)/src/gs/rt.c $(HERE)/src/gs/display.c \
+             $(HERE)/src/gs/video.c
 HOST_BIN   = $(OUT)/host/test_host
 
 $(HOST_BIN): $(HOST_SRCS) $(wildcard $(HERE)/tests/host/*.h) $(HDRS)

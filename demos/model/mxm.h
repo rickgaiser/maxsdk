@@ -20,8 +20,13 @@
    the program's OUT_QW before they are sent; 16-byte aligned, padded to
    16), a triangle strip whose pieces are joined by repeated vertices;
    skinned, its vertices of one joint (weight 255) come first, then those
-   of two, then the rest. Strips: the same strips, the vertices written out
-   (the S* streams), one run per material and palette.
+   of two, then the rest. Strips: each part (level, material, outfits) one
+   run (the S* streams): the strips of all its triangles one after the
+   other, each restarted by ADC on its first two vertices (no triangle ends
+   there) instead of joined by repeated vertices. Their position is V4-32,
+   w 2056.0 at those vertices, else 0 (the programs make it XYZ2's ADC);
+   skinned, the joints are the skeleton's (pal 0xFFFF, at most 256 joints)
+   and RNRM's w is 1 at those vertices (the EE writes w as it skins).
    A model may have only one of the two (gltf2mxm.py --layout): the other's
    sections are left out and its counts (ncluster and nvert, or nstrip and
    nsvert) are 0.
@@ -40,7 +45,7 @@
 
 #include <mx/types.h>
 
-#define MXM_MAGIC 0x334D584Du /* "MXM3" */
+#define MXM_MAGIC 0x344D584Du /* "MXM4" */
 #define MXM_SKINNED 1u
 #define MXM_SINGLE 2u /* drawn once, not as copies (gltf2mxm.py --single) */
 
@@ -92,8 +97,8 @@ struct mxm_cluster {
 
 struct mxm_strip {
   u32 first, n; /* vertices of the S* streams */
-  u16 mat, pal; /* mat: the material | the level << 8 */
-  u32 pad;
+  u16 mat, pal; /* mat: the material | the level << 8; pal 0xFFFF: the skeleton's joints */
+  u32 tris;
 };
 
 /* The texture: psm MXM_TEX_CT32, (1 << tw) x (1 << th) RGBA (alpha 128 =

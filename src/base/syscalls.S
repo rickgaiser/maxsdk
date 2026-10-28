@@ -619,6 +619,17 @@ mx_bios_machine_type:
 	.end mx_bios_machine_type
 	.size mx_bios_machine_type, .-mx_bios_machine_type
 
+	.globl mx_bios_get_gs_dxdy_offset
+	.type mx_bios_get_gs_dxdy_offset, @function
+	.ent mx_bios_get_gs_dxdy_offset
+mx_bios_get_gs_dxdy_offset:
+	li $3, 128
+	syscall
+	jr $31
+	nop
+	.end mx_bios_get_gs_dxdy_offset
+	.size mx_bios_get_gs_dxdy_offset, .-mx_bios_get_gs_dxdy_offset
+
 	.globl mx_bios_get_memory_size
 	.type mx_bios_get_memory_size, @function
 	.ent mx_bios_get_memory_size

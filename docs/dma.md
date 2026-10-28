@@ -31,6 +31,13 @@
 * MPG from `ref` tags straight to the code (`mx_vu_load`, `mx_vu_mpg_tags`): the MPG code sits in
   the tag's upper word, so the instructions start on a quadword; an odd last instruction goes in a
   `cnt` packet padded with VIF NOPs (`tests/ps2/vu.c` mpg_big: 601 instructions, PCSX2).
+* An MFIFO drain only takes `cnt`, `ref`, `refs`, `refe` and `end` tags (EE User's Manual 5.5): a
+  frame stream that CALLs chains in memory (mesh chains, `<mx/chain.h>`) runs in chain mode
+  (`mx_frame_init_chain`: each scratchpad half copied by fromSPR into a slot in memory, the slots
+  queued on VIF1 by `mx_dmaq`). `probe/p18_mfifo_call.c` puts a `call` and a `next` in the ring:
+  neither is followed, on the PS2 (the drain stops with D_STAT.CIS) and on PCSX2 (`pcsx2.md`).
+* `call`/`ret` in chains sent by `mx_dma_chain` or `mx_dmaq` on VIF1, two levels deep, and a `ret`
+  with nothing called ending the transfer: `tests/ps2/chain.c` (PS2 and PCSX2).
 
 ## Not measured yet
 

@@ -5,44 +5,98 @@
 #include <mx/irq.h>
 #include <mx/sif.h>
 #include <mx/trace.h>
+#include <mx/vif.h>
 
 struct mx_gs mx_gs;
 
 #define CSR MX_R64(MX_GS_CSR)
 #define IMR_ON 0x7C00ull /* SIGNAL and FINISH unmasked, the rest masked */
 
-static void show(u32 frame) {
-  u32 buf = frame & 1;
-  mx_gs.shown_fbp = mx_gs.fbp[buf];
-  MX_R64(MX_GS_DISPFB2) = MX_SET(GS_DISPFB2_FBP, mx_gs.fbp[buf]) |
-                          MX_SET(GS_DISPFB2_FBW, mx_gs.fbw) |
-                          MX_SET(GS_DISPFB2_PSM, MX_GS_PSM_CT32);
-  if (mx_gs.smooth)
-    MX_R64(MX_GS_DISPFB1) = MX_SET(GS_DISPFB1_FBP, mx_gs.fbp[buf]) |
-                            MX_SET(GS_DISPFB1_FBW, mx_gs.fbw) |
-                            MX_SET(GS_DISPFB1_PSM, MX_GS_PSM_CT32);
+/* write a display's registers (with interrupts off or from a handler). The
+   registers of a circuit that is off are not written: it keeps its last
+   (valid) rectangle, as zeros there are not a valid picture. */
+static void apply(const struct mx_display *d) {
+  static const u32 reg[MX_DISP_NREGS] = {MX_GS_PMODE,   MX_GS_DISPFB1,  MX_GS_DISPLAY1,
+                                         MX_GS_DISPFB2, MX_GS_DISPLAY2, MX_GS_BGCOLOR};
+  u64 r[MX_DISP_NREGS];
+  mx_display_regs(&mx_video, d, r);
+  for (int i = 0; i < MX_DISP_NREGS; i++) {
+    if ((i == MX_DISP_DISPFB1 || i == MX_DISP_DISPLAY1) && !d->c[0].on)
+      continue;
+    if ((i == MX_DISP_DISPFB2 || i == MX_DISP_DISPLAY2) && !d->c[1].on)
+      continue;
+    MX_R64(reg[i]) = r[i];
+    mx_gs.dregs[i] = r[i];
+  }
+  mx_gs.shown_fbp = d->c[1].on ? d->c[1].fbp : d->c[0].fbp;
 }
 
-/* DISPLAY of a read circuit: the picture from VCK dx (4 VCK a pixel at 640) */
-static u64 display(u32 dx) {
-  u32 w = mx_gs.w, h = mx_gs.h, full = h > 256;
-  return MX_SET(GS_DISPLAY2_DX, dx) | MX_SET(GS_DISPLAY2_DY, 50) |
-         MX_SET(GS_DISPLAY2_MAGH, (2560 + w - 1) / w - 1) | MX_SET(GS_DISPLAY2_DW, 0x9FF) |
-         MX_SET(GS_DISPLAY2_DH, (full ? h : h << 1) - 1);
+static void show(u32 frame) {
+  if (mx_gs.ndisp)
+    apply(&mx_gs.disp[frame % mx_gs.ndisp]);
 }
-#define DX 0x27C
+
+void mx_display_apply(const struct mx_display *d) {
+  int was = mx_di();
+  apply(d);
+  mx_irq_restore(was);
+}
+
+void mx_display_show(const struct mx_display *d) { mx_gs.pending = d; }
+
+/* the displays of mx_gs_init */
+static struct mx_display def[2];
+
+void mx_gs_displays(const struct mx_display *d, u32 n) {
+  int was = mx_di();
+  mx_gs.disp = d ? d : def;
+  mx_gs.ndisp = d ? n : 2;
+  mx_irq_restore(was);
+}
 
 void mx_gs_smooth(int on) {
-  /* circuit 1 half a pixel to the right: half of MAGH + 1 VCK */
-  u32 half = (2560 + mx_gs.w - 1) / mx_gs.w / 2;
   mx_gs.smooth = on;
-  MX_R64(MX_GS_DISPLAY1) = display(DX + half);
-  show(mx_gs.shown ? mx_gs.shown - 1 : 0);
-  /* both circuits, blended by ALP (0x80: 1:1), or circuit 2 only */
-  MX_R64(MX_GS_PMODE) = on ? MX_SET(GS_PMODE_EN1, 1) | MX_SET(GS_PMODE_EN2, 1) |
-                                 MX_SET(GS_PMODE_CRTMD, 1) | MX_SET(GS_PMODE_MMOD, 1) |
-                                 MX_SET(GS_PMODE_ALP, 0x80)
-                           : 0x66;
+  for (int i = 0; i < 2; i++) {
+    struct mx_display *d = &def[i];
+    /* circuit 1 the same, half a pixel to the right, blended 1:1 (ALP
+       0x80) over circuit 2; or circuit 2 only */
+    d->c[0] = d->c[1];
+    d->c[0].on = (u8)on;
+    d->c[0].dx += (s32)mx_circuit_magh(&mx_video, &d->c[1]) / 2;
+    d->amod = (u8)!on;
+    d->alp = on ? 0x80 : 0;
+  }
+  if (mx_gs.disp == def)
+    mx_display_apply(&def[(mx_gs.shown ? mx_gs.shown - 1 : 0) & 1]);
+}
+
+u32 mx_video_field(void) { return (u32)MX_GET(GS_CSR_FIELD, CSR); }
+
+void mx_vram_reset(void) { mx_gs.vram = mx_gs.tbp = 0; }
+
+u32 mx_vram_alloc(u32 pages) {
+  u32 p = mx_gs.vram;
+  if (p + pages > 512)
+    return ~0u;
+  mx_gs.vram = p + pages;
+  mx_gs.tbp = MX_GS_PAGE(mx_gs.vram);
+  return p;
+}
+
+/* A present (mx_frame_present) starts this long after the vblank at the
+   latest: it is drawn before the picture's first line (NTSC: about 1.6 ms
+   after the vblank starts; a present of the whole screen takes 0.4 ms). */
+#define PRESENT_LATE 235930u /* 0.8 ms */
+
+/* VIF1 stops at the I-bit MARK of a frame's present until the frame is
+   drawn (its FINISH: mx_gs.frames_done reaches the MARK); let it go on. */
+static int present_release(void) {
+  u32 code = MX_R32(MX_VIF_VIF1_CODE);
+  if (!(MX_R32(MX_VIF_VIF1_STAT) & MX_BIT(VIF_STAT_VIS)) ||
+      code >> 24 != (MX_VIF_IBIT >> 24 | MX_VIF_MARK) || (u16)(mx_gs.frames_done - code) & 0x8000)
+    return 0;
+  MX_R32(MX_VIF_VIF1_FBRST) = (u32)MX_BIT(VIF_FBRST_STC);
+  return 1;
 }
 
 static void gs_irq(void *arg) {
@@ -63,6 +117,13 @@ static void gs_irq(void *arg) {
       mx_gs.shown = mx_gs.frames_done;
       show(mx_gs.shown - 1);
     }
+    /* a present: now without vsync, or if the vblank has only just begun */
+    if ((mx_gs.immediate || mx_count() - mx_gs.vsync_at < PRESENT_LATE) && present_release() &&
+        !mx_gs.immediate && mx_gs.shown != mx_gs.frames_done) {
+      mx_gs.shown = mx_gs.frames_done;
+      mx_gs.slack = 0;
+      show(mx_gs.shown - 1);
+    }
     mx_trace(MX_TR_GS_FINISH, (u16)mx_gs.finish);
   }
   /* acknowledge what we saw (writing 1 clears) */
@@ -71,7 +132,13 @@ static void gs_irq(void *arg) {
 
 static void vsync_irq(void *arg) {
   mx_gs.vsync++;
+  mx_gs.vsync_at = mx_count();
   mx_trace(MX_TR_VSYNC, (u16)mx_gs.vsync);
+  present_release();
+  if (mx_gs.pending) {
+    apply(mx_gs.pending);
+    mx_gs.pending = 0;
+  }
   /* show the newest finished frame */
   if (mx_gs.frames_done && mx_gs.shown != mx_gs.frames_done) {
     mx_gs.shown = mx_gs.frames_done;
@@ -85,40 +152,83 @@ static void vsync_irq(void *arg) {
   }
 }
 
-void mx_gs_init(u32 w, u32 h) {
-  mx_gs.w = w;
-  mx_gs.h = h;
-  mx_gs.fbw = (w + 63) / 64;
-  u32 pages = mx_gs.fbw * ((h + 31) / 32); /* 8 KiB pages per 32-bit buffer */
-  mx_gs.fbp[0] = 0;
-  mx_gs.fbp[1] = pages;
-  mx_gs.zbp = 2 * pages;
-  mx_gs.tbp = 3 * pages * 32;
-  mx_gs.frames = mx_gs.frames_done = mx_gs.shown = 0;
-  mx_gs.missed = mx_gs.starved = mx_gs.counting = mx_gs.immediate = mx_gs.first = 0;
-  mx_gs.smooth = 0;
+void mx_gs_init(u32 w, u32 h) { mx_gs_init_mode(w, h, 0); }
 
-  mx_dma_init();
+/* GS reset and the CRTC timing; the GS interrupts masked */
+static void crt(const struct mx_video_mode *m) {
+  mx_video = *m;
+  mx_gs.hz = m->hz;
   MX_R32(MX_GIF_CTRL) = (u32)MX_BIT(GIF_CTRL_RST);
   CSR = MX_BIT(GS_CSR_RESET);
   mx_bios_gs_put_imr(0xFF00);
-  /* interlaced NTSC. Up to 256 lines: FRAME mode, each field shows every
-     line (both fields the same image, half a line apart); more: FIELD mode,
-     each field shows every other line of the buffer */
-  int full = h > 256;
-  mx_bios_set_gs_crt(1, 2, !full);
+  mx_bios_set_gs_crt(m->interlace, m->code, m->ffmd);
+  if (m->interlace)
+    MX_R64(MX_GS_SMODE2) = MX_SET(GS_SMODE2_INT, 1) | MX_SET(GS_SMODE2_FFMD, m->ffmd);
+}
 
-  /* read circuit 2 only (sceGsSetDefDispEnv's NTSC values) */
-  MX_R64(MX_GS_PMODE) = 0x66;
-  MX_R64(MX_GS_SMODE2) = MX_SET(GS_SMODE2_INT, 1) | MX_SET(GS_SMODE2_FFMD, !full);
-  show(0);
-  MX_R64(MX_GS_DISPLAY2) = display(DX);
-  MX_R64(MX_GS_BGCOLOR) = 0;
-
+static void irq_on(void) {
   CSR = MX_BIT(GS_CSR_SIGNAL) | MX_BIT(GS_CSR_FINISH);
   mx_irq_intc(MX_INTC_GS, gs_irq, 0);
   mx_irq_intc(MX_INTC_VBON, vsync_irq, 0);
   mx_bios_gs_put_imr(IMR_ON);
+}
+
+/* Two vblanks within 100 ms: a mode the console does not have gives none
+   (576p on BIOS 2.00, PS2 2026-10-27). */
+static int vblanks(void) {
+  u32 v = mx_gs.vsync, t0 = mx_count();
+  while (mx_gs.vsync - v < 2)
+    if (mx_count() - t0 > 29491200u)
+      return -1;
+  return 0;
+}
+
+int mx_video_set(const struct mx_video_mode *m) {
+  crt(m);
+  irq_on();
+  return vblanks();
+}
+
+static void reset_state(void) {
+  mx_gs.frames = mx_gs.frames_done = mx_gs.shown = 0;
+  mx_gs.missed = mx_gs.starved = mx_gs.counting = mx_gs.immediate = mx_gs.first = 0;
+  mx_gs.smooth = 0;
+  mx_gs.disp = 0;
+  mx_gs.ndisp = 0;
+  mx_gs.pending = 0;
+  mx_vram_reset();
+  mx_dma_init();
+}
+
+int mx_gs_init_video(const struct mx_video_mode *m) {
+  reset_state();
+  return mx_video_set(m);
+}
+
+void mx_gs_init_mode(u32 w, u32 h, u32 flags) {
+  /* interlaced NTSC or PAL. Up to 256 lines: FRAME mode, each field shows
+     every line (both fields the same image, half a line apart); more: FIELD
+     mode, each field shows every other line of the buffer */
+  struct mx_video_mode m = flags & MX_GS_PAL ? mx_video_pal : mx_video_ntsc;
+  m.ffmd = h <= 256;
+  reset_state();
+  crt(&m);
+
+  mx_gs.w = w;
+  mx_gs.h = h;
+  mx_gs.fbw = (w + 63) / 64;
+  u32 pages = mx_rt_pages(w, h, MX_GS_PSM_CT32);
+  mx_gs.fbp[0] = mx_vram_alloc(pages);
+  mx_gs.fbp[1] = mx_vram_alloc(pages);
+  mx_gs.zbp = mx_vram_alloc(pages);
+  for (int i = 0; i < 2; i++) {
+    mx_rt_init(&mx_gs.rt[i], mx_gs.fbp[i], w, h, MX_GS_PSM_CT32, mx_gs.zbp, MX_GS_PSM_Z24);
+    mx_display_init(&def[i], &mx_gs.rt[i]);
+  }
+  mx_gs_displays(def, 2);
+  /* shown before the interrupts are on, as before */
+  apply(&def[0]);
+  irq_on();
 }
 
 void mx_gs_draw_env(struct mx_pkt *p, int buf) {
@@ -186,12 +296,7 @@ void mx_gs_upload(struct mx_pkt *p, u32 dbp, u32 dbw, u32 psm, u32 x, u32 y, u32
 }
 
 u64 *mx_gs_e_draw_env(u64 *c, int buf, int eop) {
-  u32 w = mx_gs.w, h = mx_gs.h;
-  c = mx_e_ad_tag(c, 8, eop);
-  c = mx_e_ad(c, MX_GS_REG_FRAME_1, mx_gs_frame(mx_gs.fbp[buf], mx_gs.fbw, MX_GS_PSM_CT32, 0));
-  c = mx_e_ad(c, MX_GS_REG_ZBUF_1, mx_gs_zbuf(mx_gs.zbp, MX_GS_PSM_Z24, 0));
-  c = mx_e_ad(c, MX_GS_REG_XYOFFSET_1, mx_gs_xyoffset((2048 - w / 2) << 4, (2048 - h / 2) << 4));
-  c = mx_e_ad(c, MX_GS_REG_SCISSOR_1, mx_gs_scissor(0, w - 1, 0, h - 1));
+  c = mx_rt_e_regs(mx_e_ad_tag(c, 8, eop), &mx_gs.rt[buf], 0);
   c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1));
   c = mx_e_ad(c, MX_GS_REG_PRMODECONT, 1);
   c = mx_e_ad(c, MX_GS_REG_COLCLAMP, 1);
@@ -199,11 +304,7 @@ u64 *mx_gs_e_draw_env(u64 *c, int buf, int eop) {
 }
 
 u64 *mx_gs_e_clear(u64 *c, u32 r, u32 g, u32 b, int eop) {
-  c = mx_e_ad_tag(c, 4, eop);
-  c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0));
-  c = mx_e_ad(c, MX_GS_REG_RGBAQ, mx_gs_rgbaq(r, g, b, 0x80, 1.0f));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_gs_px(0), mx_gs_py(0), 0));
-  return mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_gs_px(mx_gs.w), mx_gs_py(mx_gs.h), 0));
+  return mx_rt_e_clear(c, &mx_gs.rt[0], 0, r, g, b, eop);
 }
 
 void mx_gs_send(const void *chain) {
@@ -276,10 +377,14 @@ int mx_gs_download(void *dst, u32 bp, u32 bw, u32 psm, u32 x, u32 y, u32 w, u32 
   return r;
 }
 
-int mx_gs_save_tga(int buf, const char *path) {
+int mx_gs_save_tga(int buf, const char *path) { return mx_gs_save_tga_rt(&mx_gs.rt[buf], path); }
+
+int mx_gs_save_tga_rt(const struct mx_rt *t, const char *path) {
   static u32 line[1024] MX_ALIGNED(64);
   static u8 out[1024 * 4] MX_ALIGNED(64);
-  u32 w = mx_gs.w, h = mx_gs.h, rep = h > 256 ? 1 : 2; /* lines doubled up to 256 */
+  u32 w = t->w, h = t->h, rep = mx_video_line_lines(&mx_video);
+  if (t->psm != MX_GS_PSM_CT32 || w > 1024)
+    return -1;
   int fd = mx_fio_open(path, MX_FIO_WRONLY | MX_FIO_CREAT | MX_FIO_TRUNC);
   if (fd < 0)
     return -1;
@@ -288,8 +393,7 @@ int mx_gs_save_tga(int buf, const char *path) {
                 (u8)(rep * h >> 8), 32, 0x28};
   int r = mx_fio_write(fd, hdr, sizeof hdr);
   for (u32 y = 0; y < h && r == 0; y++) {
-    if (mx_gs_download(line, MX_GS_PAGE(mx_gs.fbp[buf]), mx_gs.fbw, MX_GS_PSM_CT32, 0, y, w,
-                       1) < 0) {
+    if (mx_gs_download(line, MX_GS_PAGE(t->fbp), t->fbw, MX_GS_PSM_CT32, 0, y, w, 1) < 0) {
       r = -1;
       break;
     }

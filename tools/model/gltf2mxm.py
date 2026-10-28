@@ -5,13 +5,20 @@
 
 The model is made for VU1 programs built from HLSL (opt -vu-indexed): it is
 split into clusters of at most MAX_N vertices and MAX_I strip indices (the
-smallest of the --limits headers), each drawn as one indexed batch, and the
-same strips are also written as plain vertex streams, for the programs that
-draw strips (--layout indexed or strips: only one of the two). Every vertex attribute is a stream in the format of the shader
-inputs (demos/model/m*.hlsl):
+smallest of the --limits headers), each drawn as one indexed batch; and,
+for the programs that draw strips, each part (material, level, outfits)
+written out as strips of all its triangles, one run, the strips restarted
+by ADC instead of joined by repeated vertices (--layout indexed or strips:
+only one of the two). Every vertex attribute is a stream in the format of
+the shader inputs (demos/model/m*.hlsl):
 
     position V3-32, normal V4-8 (length 127), texture coordinates V2-16 (4.12),
     joints V4-8U (slots of the cluster's palette), weights V4-8U (sum 255).
+
+The strip streams differ: position V4-32, w 2056.0 at the first two vertices
+of each strip (XYZ2's ADC in the programs), else 0; skinned, the joints are
+the skeleton's (at most 256), and the normal's w is 1 at those vertices
+(the EE puts 2056.0 in w as it skins them).
 
 A skinned model has its positions and normals only as the skin has them (the
 bind pose: the program or the EE skins them for every frame, the rest pose
@@ -44,7 +51,7 @@ import re
 import struct
 import sys
 
-MAGIC = 0x334D584D  # "MXM3"
+MAGIC = 0x344D584D  # "MXM4"
 SKINNED = 1
 SINGLE = 2  # drawn once, not as copies
 
@@ -354,6 +361,62 @@ def stripify(tris):
     return out
 
 
+def strips_of(tris):
+    """Triangles (vertex ids) as strips, each a list of vertices: from the
+    triangle with the fewest free neighbours, on to the neighbour with the
+    fewest (each way, the best of the three corners first)."""
+    edges = {}
+    for t, (a, b, c) in enumerate(tris):
+        for e in ((a, b), (b, c), (c, a)):
+            edges.setdefault((min(e), max(e)), []).append(t)
+    nb = [[] for _ in tris]
+    for ts in edges.values():
+        for t in ts:
+            nb[t].extend(u for u in ts if u != t)
+    used = bytearray(len(tris))
+    deg = [len(x) for x in nb]
+    by_deg = {}
+    for t, d in enumerate(deg):
+        by_deg.setdefault(d, set()).add(t)
+
+    def take(t):
+        used[t] = 1
+        by_deg[deg[t]].discard(t)
+        for u in nb[t]:
+            if not used[u]:
+                by_deg[deg[u]].discard(u)
+                deg[u] -= 1
+                by_deg.setdefault(deg[u], set()).add(u)
+
+    def extend(s, tmp):
+        while True:
+            a, b = s[-2], s[-1]
+            nxt = [u for u in edges.get((min(a, b), max(a, b)), ()) if not used[u] and u not in tmp]
+            if not nxt:
+                return
+            u = min(nxt, key=lambda u: (deg[u], u))
+            tmp.add(u)
+            s.append([v for v in tris[u] if v != a and v != b][0])
+
+    strips, left = [], len(tris)
+    while left:
+        # the first of those with the fewest free neighbours
+        t = min(next(ts for d, ts in sorted(by_deg.items()) if ts))
+        best = None
+        for r in range(3):
+            s, tmp = list(tris[t][r:] + tris[t][:r]), {t}
+            extend(s, tmp)
+            s.reverse()
+            extend(s, tmp)
+            if best is None or len(tmp) > len(best[1]):
+                best = (s, tmp)
+        for u in best[1]:
+            take(u)
+        left -= len(best[1])
+        strips.append(best[0])
+    return strips
+
+
 # ---- the model ---------------------------------------------------------------------
 
 def main():
@@ -640,21 +703,28 @@ def main():
                 for k in range(3)]
     stream_n = [0]  # vertices in the cluster streams
 
-    def emit(dst, vs, pal):
-        """The vertices vs into the streams of dst ("" or "S")."""
-        for v in vs:
+    def emit(dst, vs, pal, restart=()):
+        """The vertices vs into the streams of dst ("" or "S"); pal None: the
+        skeleton's joints; restart: the positions in vs where a strip
+        starts (S)."""
+        for i, v in enumerate(vs):
             k = verts[v]
+            r = i in restart
             if not skin:
-                S[dst + "POS"] += struct.pack("<3f", *k[0])
+                if dst:
+                    S["SPOS"] += struct.pack("<4f", *k[0], 2056.0 if r else 0.0)
+                else:
+                    S["POS"] += struct.pack("<3f", *k[0])
                 S[dst + "NRM"] += struct.pack("<4b", *k[1])
             S[dst + "UV"] += struct.pack("<2h", *k[2])
             if skin:
                 S[dst + "RPOS"] += struct.pack("<3h", *quant_pos(k[3]))
-                S[dst + "RNRM"] += struct.pack("<4b", *k[4])
-                S[dst + "JNT"] += struct.pack("<4B", *[slot[pal][j] for j in k[5]])
+                S[dst + "RNRM"] += struct.pack("<4b", *k[4][:3], 1 if r else 0)
+                S[dst + "JNT"] += struct.pack("<4B", *[j if pal is None else slot[pal][j]
+                                                        for j in k[5]])
                 S[dst + "WGT"] += struct.pack("<4B", *k[6])
 
-    cluster_recs, strips_by_group = [], {}
+    cluster_recs = []
     ntri = 0
     for ci, (ct, m) in enumerate(clusters):
         mt = [t[:3] for t in tris if t[3] == m]
@@ -692,23 +762,30 @@ def main():
         cluster_recs.append(struct.pack("<IHHIHH4f", first, len(order), len(strip), idx_at,
                                         mat_of[m[0]] | m[1] << 8, pal_of[ci], cc[0], cc[1],
                                         cc[2], cr))
-        strips_by_group.setdefault((m[1], mat_of[m[0]], m[2], pal_of[ci]), []).append([order[x] for x in
-                                                                         [renum[y] for y in strip]])
     # align more vertices after the last: a batch reads up to ALIGN - 1 more
     # (the last one again: its joints are in the last cluster's palette)
     if clusters:
         emit("", [order[-1]] * align, pal_of[-1])
     S["CLUSTER"] = bytearray(b"".join(cluster_recs))
 
-    # the strip path: each (material, outfit mask, palette) one strip of its clusters'
+    # the strip path: each part (level, material, outfit mask) one run of the
+    # strips of all its triangles, in the clusters' order; the joints are the
+    # skeleton's (pal 0xFFFF)
+    if skin and njoint > 256 and args.layout != "indexed":
+        fail("%d joints: strips take at most 256 (--layout indexed)" % njoint)
     strip_recs, strip_masks, sn = [], [], 0
-    for (li, mi, om, pi), lst in sorted(strips_by_group.items()):
-        strip_masks.append(om)
-        seq = list(lst[0])
-        for s in lst[1:]:
-            seq += [seq[-1], s[0]] + s
-        emit("S", seq + [seq[-1]] * (((-len(seq)) % align) + align), pi)
-        strip_recs.append(struct.pack("<IIHHI", sn, len(seq), mi | li << 8, pi, 0))
+    for m in sorted({t[3] for t in tris}, key=lambda ml: (ml[1], ml[0], ml[2])):
+        if args.layout == "indexed":
+            break
+        mt = [t[:3] for t in tris if t[3] == m]
+        seq, restart = [], set()
+        for st in strips_of(mt):
+            restart |= {len(seq), len(seq) + 1}
+            seq += st
+        strip_masks.append(m[2])
+        emit("S", seq + [seq[-1]] * (((-len(seq)) % align) + align), None, restart)
+        strip_recs.append(struct.pack("<IIHHI", sn, len(seq), mat_of[m[0]] | m[1] << 8, 0xFFFF,
+                                      len(mt)))
         sn += len(seq) + ((-len(seq)) % align) + align
     S["STRIP"] = bytearray(b"".join(strip_recs))
 

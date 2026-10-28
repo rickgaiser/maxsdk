@@ -204,10 +204,8 @@ void mx_dmaq_release(struct mx_dmaq *q) {
   mx_irq_dmac(q->ch, 0, 0);
 }
 
-static mx_event q_submit(struct mx_dmaq *q, u32 chcr, u32 addr, u32 qwc) {
-  /* wait for a free slot */
-  while (q->tail - q->head >= MX_DMAQ_LEN)
-    ;
+/* Queue a segment; the queue has a free slot. */
+static mx_event q_put(struct mx_dmaq *q, u32 chcr, u32 addr, u32 qwc) {
   int was = mx_di();
   u32 t = q->tail;
   struct mx_dma_seg *s = &q->seg[t % MX_DMAQ_LEN];
@@ -224,9 +222,29 @@ static mx_event q_submit(struct mx_dmaq *q, u32 chcr, u32 addr, u32 qwc) {
   return e;
 }
 
+static mx_event q_submit(struct mx_dmaq *q, u32 chcr, u32 addr, u32 qwc) {
+  /* wait for a free slot */
+  while (q->tail - q->head >= MX_DMAQ_LEN)
+    ;
+  return q_put(q, chcr, addr, qwc);
+}
+
+static u32 chain_chcr(int tte) {
+  return MX_CHCR_CHAIN | MX_CHCR_FROM_MEM | (tte ? MX_CHCR_TTE : 0);
+}
+
 mx_event mx_dmaq_chain(struct mx_dmaq *q, const void *tags, int tte) {
-  return q_submit(q, MX_CHCR_CHAIN | MX_CHCR_FROM_MEM | (tte ? MX_CHCR_TTE : 0), mx_phys(tags),
-                  0);
+  return q_submit(q, chain_chcr(tte), mx_phys(tags), 0);
+}
+
+int mx_dmaq_try_chain(struct mx_dmaq *q, const void *tags, int tte, mx_event *e) {
+  /* in an interrupt handler only the handler itself frees slots */
+  if (q->tail - q->head >= MX_DMAQ_LEN)
+    return -1;
+  mx_event ev = q_put(q, chain_chcr(tte), mx_phys(tags), 0);
+  if (e)
+    *e = ev;
+  return 0;
 }
 
 mx_event mx_dmaq_normal(struct mx_dmaq *q, const void *addr, u32 qwc) {
