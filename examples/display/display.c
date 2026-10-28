@@ -22,9 +22,9 @@
    every mode for a second, then every scene, and exits. Arguments: m<n>
    start at mode n (0 = the first of the table), s<n> n seconds a step. */
 
+#include <mx/hud.h>
 #include <mx/mx.h>
 #include <mx/pad.h>
-#include "hud.h"
 
 struct demo_mode {
   const char *name;
@@ -59,7 +59,7 @@ static struct mx_display disp[2];
 static int mode = -1, scene, running;
 static s32 dx, dy;
 
-/* text and boxes of hud.h go to a target of this size */
+/* text and boxes of <mx/hud.h> go to a target of this size */
 static void hud_target(const struct mx_rt *t) {
   mx_gs.w = t->w;
   mx_gs.h = t->h;
@@ -88,17 +88,17 @@ static void box(const struct mx_rt *t, u32 x0, u32 y0, u32 x1, u32 y1, u32 rgba)
 }
 
 static void label(char *s) {
-  char *p = hud_cat(s, modes[mode].name);
-  p = hud_cat(p, "  ");
-  p = hud_cat(p, scenes[scene]);
-  p = hud_cat(p, "  DX ");
+  char *p = mx_hud_cat(s, modes[mode].name);
+  p = mx_hud_cat(p, "  ");
+  p = mx_hud_cat(p, scenes[scene]);
+  p = mx_hud_cat(p, "  DX ");
   if (dx < 0)
-    p = hud_cat(p, "-");
-  p = hud_u(p, (u32)(dx < 0 ? -dx : dx));
-  p = hud_cat(p, " DY ");
+    p = mx_hud_cat(p, "-");
+  p = mx_hud_u(p, (u32)(dx < 0 ? -dx : dx));
+  p = mx_hud_cat(p, " DY ");
   if (dy < 0)
-    p = hud_cat(p, "-");
-  hud_u(p, (u32)(dy < 0 ? -dy : dy));
+    p = mx_hud_cat(p, "-");
+  mx_hud_u(p, (u32)(dy < 0 ? -dy : dy));
 }
 
 /* the overlay: transparent, a 2-pixel border at the edge, a centre cross */
@@ -117,11 +117,11 @@ static void draw_hud(void) {
   box(t, w / 2 - 1, h / 2 - 20, w / 2 + 1, h / 2 + 20, 0x80FFFF00);
   box(t, w / 2 - 20, h / 2 - 1, w / 2 + 20, h / 2 + 1, 0x80FFFF00);
   label(s);
-  hud_text(16, 16, s, 0xFFFFFF, 1);
-  char *p = hud_u(s, w);
-  p = hud_cat(p, "X");
-  hud_u(p, h);
-  hud_text(16, 28, s, 0xFFFFFF, 1);
+  mx_hud_text(16, 16, s, 0xFFFFFF, 1);
+  char *p = mx_hud_u(s, w);
+  p = mx_hud_cat(p, "X");
+  mx_hud_u(p, h);
+  mx_hud_text(16, 28, s, 0xFFFFFF, 1);
 }
 
 /* the animation: bars moving across, and the label */
@@ -138,7 +138,7 @@ static void draw_lo(const struct mx_rt *t, u32 k) {
         0x80000000 | (0xFF0000 >> (8 * (i % 3))) | 0x404040);
   }
   label(s);
-  hud_text(8, h - 16, s, 0xFFFFFF, 1);
+  mx_hud_text(8, h - 16, s, 0xFFFFFF, 1);
 }
 
 static u8 tri(u32 k) { /* 0 -> 0xFF -> 0 every 128 frames */
@@ -221,7 +221,7 @@ static void set_mode(int i) {
   mx_gs_displays(disp, 2);
   mx_frame_init(ring, sizeof ring, (void *)0x70002000, 0x2000);
   running = 1;
-  hud_init(mx_gs.tbp, 224);
+  mx_hud_init(mx_gs.tbp, 224);
 }
 
 int main(int argc, char **argv) {

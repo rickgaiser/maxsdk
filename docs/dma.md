@@ -23,7 +23,7 @@
 
 * In MFIFO mode fromSPR is the ring's source and its MADR is the ring's write pointer. Any other
   fromSPR transfer (e.g. the DMA readback of VU memory, toSPR + fromSPR) moves that pointer and
-  breaks the ring: `demos/allunits/allunits.c` hung on PCSX2 until the readback copied from the scratchpad
+  breaks the ring: `examples/allunits/allunits.c` hung on PCSX2 until the readback copied from the scratchpad
   with the EE instead while the MFIFO runs (`src/vu/vu.c` read_dma).
 * An MFIFO drain (VIF1) in source chain mode with TTE reads `ref` tags that point outside the ring
   (vertex arrays in memory) and sends the VIF codes in each tag: the frame pipeline relies on both

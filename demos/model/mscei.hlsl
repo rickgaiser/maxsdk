@@ -1,4 +1,4 @@
-// Model demo: ps2gl's SCEI shader (demos/vumax/vh_scei.hlsl) for the model's
+// Model demo: ps2gl's SCEI shader (examples/vumax/vh_scei.hlsl) for the model's
 // streams, without clipping: three directional lights clamped at 255,
 // textured, perspective correct. The normal is V4-8 (length 127), the texture
 // coordinates V2-16 in 4.12 fixed point. The MVP gives offset-free

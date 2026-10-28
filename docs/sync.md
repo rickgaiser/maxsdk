@@ -81,10 +81,10 @@ table after this one.
 | Pattern | Where | To measure on the PS2 |
 |---|---|---|
 | Fences: DMA end interrupt vs polled VIF MARK (one chain, a MARK per batch) vs GS LABEL | `probe/p5_fast.c` | latency and per-batch cost of each; the default fence (D13) follows from it. `mx_vuq_wait` already polls the MARK (no interrupt on the wait path) |
-| Render pipeline: stream built in two SPR halves, pushed into an MFIFO ring, VIF1 drains it all the time; VU1 render kernel double-buffered (BASE/OFFSET + xtop), XGKICK; FINISH per frame, vblank swap | `include/mx/frame.h`, `demos/scene/scene.c` | frames per vsync, missed / starved vblanks, EE wait for the back buffer and for ring space, busy shares; double-buffered vs FLUSHE after every batch (no vsync, 256 cubes) |
-| Textures over PATH3 next to the stream; the stream waits with FLUSHA before the geometry that uses them | `demos/scene/scene.c`, `demos/allunits/allunits.c` | PATH3 vs PATH1 interleave in the busy shares |
+| Render pipeline: stream built in two SPR halves, pushed into an MFIFO ring, VIF1 drains it all the time; VU1 render kernel double-buffered (BASE/OFFSET + xtop), XGKICK; FINISH per frame, vblank swap | `include/mx/frame.h`, `examples/scene/scene.c` | frames per vsync, missed / starved vblanks, EE wait for the back buffer and for ring space, busy shares; double-buffered vs FLUSHE after every batch (no vsync, 256 cubes) |
+| Textures over PATH3 next to the stream; the stream waits with FLUSHA before the geometry that uses them | `examples/scene/scene.c`, `examples/allunits/allunits.c` | PATH3 vs PATH1 interleave in the busy shares |
 | mx_sched: VU workers take batches from a pool when idle, the EE takes small chunks; every wait polls the workers | `include/mx/sched.h`, `bench/vudemo` (MODE_SCHED) | cycles/qw vs the static schedule (31.00) and how the pool spreads over VU0, VU1 and the FPU |
-| All units: VU1 render + GS, PATH3 texture, VU0 particle step on VIF0, EE/FPU matrices and sprites, step f-1 drawn in frame f | `demos/allunits/allunits.c` | busy share of every unit; every idle gap above 1 % of a frame needs a cause here |
+| All units: VU1 render + GS, PATH3 texture, VU0 particle step on VIF0, EE/FPU matrices and sprites, step f-1 drawn in frame f | `examples/allunits/allunits.c` | busy share of every unit; every idle gap above 1 % of a frame needs a cause here |
 | VU1 compute between render passes (D16 b): FLUSH, MPG, run, stop at a VIF i-bit, EE reads by toSPR, resume | `mx_frame_vu1_compute`, `tests/ps2/frame.c` | the GS idle time it costs per pass |
 
 Found on the way:

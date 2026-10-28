@@ -1,4 +1,4 @@
-/* UNPACK cost with skipping write (PS2 only, demos/vumax): VIF1 normal-mode
+/* UNPACK cost with skipping write (PS2 only, examples/vumax): VIF1 normal-mode
    DMA of 1024 vectors from memory in UNPACKs of 256, STCYCL CL = 1..4 with
    WL = 1 (every CL-th quadword written: the slots of in-place vertices), per
    format; then the same with WL = CL (filling, no skip) for comparison, and

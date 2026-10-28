@@ -26,10 +26,10 @@ renderer (`Renderer = 13` in `[EmuCore/GS]` of the flatpak's `inis/PCSX2.ini`, s
 | VIF1 FLUSHE behind a T-stopped VU1 | waits until a reset or resume | passes, MARK set | maxsdk vustop.c (`maxsdk_vu_work_2026-10-24/`) |
 | CTC2 CMSAR0 directly followed by VCALLMSR | starts at the previous CMSAR0 | starts at the new one | maxsdk vustate.c (`maxsdk_vu_work_2026-10-24/`) |
 | D bit on VU0, VU0 watchdog | hangs the PS2; no watchdog in 5 s | ignored; no watchdog | maxsdk vudbit.c, vustate.c (`maxsdk_vu_work_2026-10-24/`) |
-| spin demo, 120 frames | 146 vsyncs | 119 vsyncs | maxsdk `demos/spin/spin.c` |
+| spin demo, 120 frames | 146 vsyncs | 119 vsyncs | maxsdk `examples/spin/spin.c` |
 | A second SIGNAL before CSR.SIGNAL is cleared (GS interrupts masked) | the same: the GS stops until CSR.SIGNAL is written | the GS stops at the second SIGNAL (SIGID 0x11, the LABEL after it not yet set) and goes on once CSR.SIGNAL is written | maxsdk `probe/p5_fast.c` |
 | Stall control, normal-mode VIF1 drain (`probe/p5_fast.c` stall_normal) | the drain waits; data correct | the drain does not wait: 28 of 28 words wrong | maxsdk `probe/p5_fast.c` |
-| Timing of everything in phases 5-7 (frame pipeline, mx_sched, sampling) | | DMA, VU and GS work finish almost at once: busy shares read 0 %, there are no missed vblanks | maxsdk `demos/scene/scene.c`, `demos/allunits/allunits.c` |
+| Timing of everything in phases 5-7 (frame pipeline, mx_sched, sampling) | | DMA, VU and GS work finish almost at once: busy shares read 0 %, there are no missed vblanks | maxsdk `examples/scene/scene.c`, `examples/allunits/allunits.c` |
 
 ## PLAN_PROCGEN (PS2 and PCSX2 2.5, 2026-10-23/24)
 

@@ -83,12 +83,12 @@
    instead, still pictures and frame times of AA1 and supersampling
    (shots). */
 
+#include <mx/hud.h>
 #include <mx/mx.h>
 #include <mx/pad.h>
 #include <mx/sif.h>
 #include <mx/tex.h>
 #include <mx/vu0r.h>
-#include "hud.h"
 #include "mflat.h"
 #include "mflat_ix.h"
 #include "mlit.h"
@@ -2404,13 +2404,13 @@ static void hud_draw(void) {
     hud_name(of, M.outfit[outfit]);
   if (animated(V.shader))
     hud_name(an, M.anim[V.anim].name);
-  u32 wo = hud_width(of, 1), ax = 16 + (wo ? wo + 18 : 0);
-  u32 w = hud_width(M.name, 2), ws = ax - 16 + hud_width(an, 1);
+  u32 wo = mx_hud_width(of, 1), ax = 16 + (wo ? wo + 18 : 0);
+  u32 w = mx_hud_width(M.name, 2), ws = ax - 16 + mx_hud_width(an, 1);
   w = ws > w ? ws : w;
-  hud_box(8, 6, w + 16, *of || *an ? 34 : 24, HUD_PANEL);
-  hud_text(16, 11, M.name, HUD_TEXT, 2);
-  hud_text(16, 29, of, HUD_GOLD, 1);
-  hud_text(ax, 29, an, HUD_GREY, 1);
+  mx_hud_box(8, 6, w + 16, *of || *an ? 34 : 24, HUD_PANEL);
+  mx_hud_text(16, 11, M.name, HUD_TEXT, 2);
+  mx_hud_text(16, 29, of, HUD_GOLD, 1);
+  mx_hud_text(ax, 29, an, HUD_GREY, 1);
   if (hud_keys) {
     /* 0: SELECT's and TRIANGLE's, which depend on the model */
     static const char *const keys[][2] = {{"SELECT", 0},
@@ -2424,33 +2424,33 @@ static void hud_draw(void) {
                                           {"R3", "AA/FILTER/SS"}};
     const char *sel = M.noutfit > 1 ? "OUTFIT" : nmodel > 1 ? "MODEL" : 0;
     const char *tri = M.h->flags & MXM_SINGLE ? "SPRINGS" : "COPIES";
-    u32 kw = hud_width("TRIANGLE  STRIPS/INDEXED", 1), x = SW - 8 - kw - 16, y = 11, n = 0;
+    u32 kw = mx_hud_width("TRIANGLE  STRIPS/INDEXED", 1), x = SW - 8 - kw - 16, y = 11, n = 0;
     for (u32 i = 0; i < sizeof keys / sizeof *keys; i++)
       n += (keys[i][1] ? keys[i][1] : i ? tri : sel) != 0;
-    hud_box(x, 6, kw + 16, 10 * n + 7, HUD_PANEL);
+    mx_hud_box(x, 6, kw + 16, 10 * n + 7, HUD_PANEL);
     for (u32 i = 0; i < sizeof keys / sizeof *keys; i++) {
       const char *what = keys[i][1] ? keys[i][1] : i ? tri : sel;
       if (!what)
         continue;
-      hud_text(x + 8, y, keys[i][0], HUD_GREY, 1);
-      hud_text(x + 8 + 6 * 10, y, what, HUD_TEXT, 1);
+      mx_hud_text(x + 8, y, keys[i][0], HUD_GREY, 1);
+      mx_hud_text(x + 8 + 6 * 10, y, what, HUD_TEXT, 1);
       y += 10;
     }
   }
   u32 bw = 0, nl = 0;
   for (int l = 0; l < 4; l++)
     if (hud[l][0]) {
-      u32 lw = hud_width(hud[l], 1);
+      u32 lw = mx_hud_width(hud[l], 1);
       bw = lw > bw ? lw : bw, nl++;
     }
   if (!nl)
     return;
   u32 y = 218 - 10 * nl;
-  hud_box(8, y - 5, bw + 16, 10 * nl + 7, HUD_PANEL);
+  mx_hud_box(8, y - 5, bw + 16, 10 * nl + 7, HUD_PANEL);
   static const u32 col[4] = {HUD_GREY, HUD_GREY, HUD_TEXT, HUD_TEXT};
   for (int l = 0; l < 4; l++)
     if (hud[l][0]) {
-      hud_text(16, y, hud[l], col[l], 1);
+      mx_hud_text(16, y, hud[l], col[l], 1);
       y += 10;
     }
 }
@@ -2626,49 +2626,49 @@ static void mip_set(int m) {
    and the speed (the interactive mode, the bench); drawn by hud_draw with
    the model, its outfit and animation. */
 static void hud_mode(char *p) {
-  p = hud_cat(p, shader_names[V.shader]);
-  p = hud_cat(p, ix_now() ? "  INDEXED" : "  STRIPS");
+  p = mx_hud_cat(p, shader_names[V.shader]);
+  p = mx_hud_cat(p, ix_now() ? "  INDEXED" : "  STRIPS");
   if (V.copies > 1) {
-    p = hud_cat(p, "  ");
-    p = hud_u(p, (u32)(V.copies * V.copies));
-    p = hud_cat(p, " COPIES");
+    p = mx_hud_cat(p, "  ");
+    p = mx_hud_u(p, (u32)(V.copies * V.copies));
+    p = mx_hud_cat(p, " COPIES");
   }
   if (P.active)
-    p = hud_cat(p, "  PHYS");
+    p = mx_hud_cat(p, "  PHYS");
   if (aa1)
-    p = hud_cat(p, "  AA1");
+    p = mx_hud_cat(p, "  AA1");
   if (mx_gs.smooth)
-    p = hud_cat(p, mx_gs.smooth == MX_SMOOTH_DOWN ? "  DEFLICKER" : "  SOFT");
+    p = mx_hud_cat(p, mx_gs.smooth == MX_SMOOTH_DOWN ? "  DEFLICKER" : "  SOFT");
   if (ss_j) {
     /* the samples a pixel */
-    p = hud_cat(p, "  SS ");
-    p = hud_u(p, (u32)(ss_s * ss_s * itof(ss_j) + 0.5f));
+    p = mx_hud_cat(p, "  SS ");
+    p = mx_hud_u(p, (u32)(ss_s * ss_s * itof(ss_j) + 0.5f));
   }
   if (V.shader >= S_TEX && mip_mode != MIP_OFF) {
-    p = hud_cat(p, mip_names[mip_mode]);
+    p = mx_hud_cat(p, mip_names[mip_mode]);
     if (mip_bias) {
       /* in eighths of a level: +4/8 */
       *p++ = mip_bias < 0 ? '-' : '+', *p = 0;
-      p = hud_u(p, (u32)(mip_bias < 0 ? -mip_bias : mip_bias) / 2);
-      p = hud_cat(p, "/8");
+      p = mx_hud_u(p, (u32)(mip_bias < 0 ? -mip_bias : mip_bias) / 2);
+      p = mx_hud_cat(p, "/8");
     }
   }
   if (nlod > 1) {
     /* the level of each material (of the first copy) */
-    p = hud_cat(p, "  LOD ");
+    p = mx_hud_cat(p, "  LOD ");
     for (u32 mt = 0; mt < M.h->nmat; mt++)
       *p++ = (char)('0' + lod_sel[0][mt]), *p = 0;
   }
   if (use_vu0 && V.shader == S_SCEI && !ix_now() && !use_mfifo && !ss_j && !aa1)
-    p = hud_cat(p, "  EE+VU0");
+    p = mx_hud_cat(p, "  EE+VU0");
   if (animated(V.shader))
-    hud_cat(p, "  EE SKIN");
+    mx_hud_cat(p, "  EE SKIN");
 }
 static void hud_counts(char *p) {
-  p = hud_u(p, st_frame.tris);
-  p = hud_cat(p, " TRIANGLES  ");
-  p = hud_u(p, st_frame.verts);
-  hud_cat(p, " VERTICES");
+  p = mx_hud_u(p, st_frame.tris);
+  p = mx_hud_cat(p, " TRIANGLES  ");
+  p = mx_hud_u(p, st_frame.verts);
+  mx_hud_cat(p, " VERTICES");
 }
 
 /* The busy shares of the sampler (since mx_trace_sample was started). */
@@ -2747,11 +2747,11 @@ static void bench(int shader, int indexed) {
   r->ee = w < r->cycles ? (u32)((r->cycles - w) * 100 / r->cycles) : 0;
   report(r);
   char *p = hud[2];
-  p = hud_cat(p, "LAST: ");
-  p = hud_u1(p, (u64)r->frames * MX_EE_HZ, r->cycles);
-  p = hud_cat(p, " FPS  VU1 ");
-  p = hud_u(p, r->vu1);
-  hud_cat(p, "%");
+  p = mx_hud_cat(p, "LAST: ");
+  p = mx_hud_u1(p, (u64)r->frames * MX_EE_HZ, r->cycles);
+  p = mx_hud_cat(p, " FPS  VU1 ");
+  p = mx_hud_u(p, r->vu1);
+  mx_hud_cat(p, "%");
 }
 
 /* The picture of the last frame: a hash of each line. */
@@ -2908,7 +2908,7 @@ static int use_model(u32 i) {
     V.indexed ^= 1;
   V.copies = copies(V.copies);
   phys_open();
-  hud_init(M.tbp_free, SH);
+  mx_hud_init(M.tbp_free, SH);
   return S_N;
 }
 
@@ -3024,16 +3024,16 @@ static void interactive(int nshader) {
       u32 ee = w < cyc ? (u32)((u64)(cyc - w) * 100 / cyc) : 0;
       int micro = M.skinned && animated(V.shader) && ix_now() && skin_micro;
       char *p = hud[2];
-      p = hud_u(p, (u32)((u64)fr * MX_EE_HZ / cyc));
-      p = hud_cat(p, V.vsync ? " FPS  " : " FPS NO VSYNC  ");
-      p = hud_u1(p, tri * MX_EE_HZ / cyc, 1000000);
-      hud_cat(p, "M TRIANGLES/S");
-      p = hud_cat(hud[3], micro ? "EE " : "EE/VU0 ");
-      p = hud_cat(hud_u(p, ee), "%  ");
+      p = mx_hud_u(p, (u32)((u64)fr * MX_EE_HZ / cyc));
+      p = mx_hud_cat(p, V.vsync ? " FPS  " : " FPS NO VSYNC  ");
+      p = mx_hud_u1(p, tri * MX_EE_HZ / cyc, 1000000);
+      mx_hud_cat(p, "M TRIANGLES/S");
+      p = mx_hud_cat(hud[3], micro ? "EE " : "EE/VU0 ");
+      p = mx_hud_cat(mx_hud_u(p, ee), "%  ");
       if (micro)
-        p = hud_cat(hud_u(hud_cat(p, "VU0 "), ns ? b[5] * 100 / ns : 0), "%  ");
-      p = hud_cat(hud_u(hud_cat(p, "VU1 "), vu1), "%  ");
-      hud_cat(hud_u(hud_cat(p, "GS "), gs), "%");
+        p = mx_hud_cat(mx_hud_u(mx_hud_cat(p, "VU0 "), ns ? b[5] * 100 / ns : 0), "%  ");
+      p = mx_hud_cat(mx_hud_u(mx_hud_cat(p, "VU1 "), vu1), "%  ");
+      mx_hud_cat(mx_hud_u(mx_hud_cat(p, "GS "), gs), "%");
       mx_trace_sample(0);
       mx_trace_sample(1000);
       tp = mx_count(), fp = mx_gs.frames, n = 0, tri = 0;
@@ -3063,7 +3063,7 @@ static void record(void) {
     hud_mode(hud[0]);
     if (i)
       hud_counts(hud[1]);
-    hud_u(hud_cat(hud[2], "FRAME "), i);
+    mx_hud_u(mx_hud_cat(hud[2], "FRAME "), i);
     frame(t);
     if (!i) {
       hud_counts(hud[1]);
@@ -3112,10 +3112,10 @@ static void mip_shots(void) {
         ;
       mx_frame_stop();
       char path[40] = "host:mip_d";
-      char *e = hud_u(path + 10, k);
-      e = hud_cat(e, "_");
-      e = hud_cat(e, name[m]);
-      hud_cat(e, ss ? "_ss16.tga" : ".tga");
+      char *e = mx_hud_u(path + 10, k);
+      e = mx_hud_cat(e, "_");
+      e = mx_hud_cat(e, name[m]);
+      mx_hud_cat(e, ss ? "_ss16.tga" : ".tga");
       if (mx_gs_save_tga((int)(last & 1), path) < 0)
         mx_printf("model: %s could not be written\n", path);
       else
@@ -3153,10 +3153,10 @@ static void shots(void) {
         ;
       mx_frame_stop();
       char name[40] = "host:shot_d";
-      char *e = hud_u(name + 11, k);
-      e = hud_cat(e, "_");
-      e = hud_cat(e, mode[m].name);
-      hud_cat(e, ".tga");
+      char *e = mx_hud_u(name + 11, k);
+      e = mx_hud_cat(e, "_");
+      e = mx_hud_cat(e, mode[m].name);
+      mx_hud_cat(e, ".tga");
       mx_printf("model: %s: %u tiles of %u passes, scale %u%%\n", name, ss_tiles[0] * ss_tiles[1],
                 (u32)ss_j, (u32)(ss_s * 100 + 0.5f));
       if (mx_gs_save_tga((int)(last & 1), name) < 0)

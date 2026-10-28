@@ -141,7 +141,7 @@ Found on the way (PS2):
 
 ## Vertex rate at the floor: vumax (PS2, 2026-10-25)
 
-`demos/vumax/vumax.c`: hand-scheduled kernels (`tools/vusched/vusched.py`, `vx_*.vsm`) next to the
+`examples/vumax/vumax.c`: hand-scheduled kernels (`tools/vusched/vusched.py`, `vx_*.vsm`) next to the
 same programs in HLSL (`vh_*.hlsl`). The floor of a kernel is its upper (FMAC) ops per vertex;
 S1/S2 would be DIV-bound at 7 but take every second 1/w from the EFU (ERCPR), 4 vertices per
 24 cycles. In-place batches (the VIF puts each input into the quadword of its GIF register;

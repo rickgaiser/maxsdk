@@ -1,14 +1,11 @@
-/* Text for the demos' on-screen counters: a 5x7 font (the characters of
-   hud_chars) in a 256 x 8 texture, drawn as PATH2 sprites on the frame
-   pipeline (<mx/frame.h>), in lines of a 224-line screen. As in
-   demos/procgen/procgen.c. */
-#ifndef DEMOS_HUD_H
-#define DEMOS_HUD_H
+/* The HUD text and boxes (<mx/hud.h>). */
 
+#include <mx/hud.h>
 #include <mx/mx.h>
 
 static const char hud_chars[] = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.:%/-";
 /* one byte per row, bits 4..0 left to right */
+// clang-format off
 static const u8 hud_glyphs[][7] = {
     {0, 0, 0, 0, 0, 0, 0},
     {14, 17, 19, 21, 25, 17, 14}, {4, 12, 4, 4, 4, 4, 14},     {14, 17, 1, 2, 4, 8, 31},
@@ -25,13 +22,12 @@ static const u8 hud_glyphs[][7] = {
     {17, 17, 10, 4, 10, 17, 17},  {17, 17, 10, 4, 4, 4, 4},    {31, 1, 2, 4, 8, 16, 31},
     {0, 0, 0, 0, 0, 12, 12},      {0, 12, 12, 0, 12, 12, 0},   {24, 25, 2, 4, 8, 19, 3},
     {1, 2, 2, 4, 8, 8, 16},       {0, 0, 0, 31, 0, 0, 0}};
+// clang-format on
 
 static u32 hud_tex[256 * 8] MX_ALIGNED(64);
 static u32 hud_tbp, hud_lines = 224;
 
-/* Make the font and upload it to tbp by PATH3 (texture slot 0) on a frame
-   pipeline that has been started; lines: the height of the screen. */
-static void hud_init(u32 tbp, u32 lines) {
+void mx_hud_init(u32 tbp, u32 lines) {
   for (u32 i = 0; i < 256 * 8; i++)
     hud_tex[i] = 0;
   for (u32 g = 0; g < sizeof hud_glyphs / sizeof *hud_glyphs; g++)
@@ -46,10 +42,7 @@ static void hud_init(u32 tbp, u32 lines) {
   mx_frame_wait_path3();
 }
 
-/* Text at (x, y): pixels, and lines of a 224-line screen, in colour rgb
-   (0xRRGGBB, 0x80 full) and scale times as big. Characters not in the font
-   are spaces. */
-static void hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
+void mx_hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
   u32 n = 0;
   for (const char *p = s; *p; p++)
     n++;
@@ -65,8 +58,8 @@ static void hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
     for (u32 i = 0; i < max; i++)
       part[i] = s[i];
     part[max] = 0;
-    hud_text(x, y, part, rgb, scale);
-    hud_text(x + max * 6 * scale, y, s + max, rgb, scale);
+    mx_hud_text(x, y, part, rgb, scale);
+    mx_hud_text(x + max * 6 * scale, y, s + max, rgb, scale);
     return;
   }
   u64 *c = mx_frame_direct(6 + 4 * n);
@@ -95,17 +88,14 @@ static void hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
   mx_frame_commit(c);
 }
 
-/* The width in pixels of text s at scale. */
-__attribute__((unused)) static u32 hud_width(const char *s, u32 scale) {
+u32 mx_hud_width(const char *s, u32 scale) {
   u32 n = 0;
   for (const char *p = s; *p; p++)
     n++;
   return n ? (6 * n - 1) * scale : 0;
 }
 
-/* A rectangle at (x, y), w x h (pixels, and lines of a 224-line screen),
-   blended over what is drawn: rgba (0xAARRGGBB, alpha 0x80 opaque). */
-__attribute__((unused)) static void hud_box(u32 x, u32 y, u32 w, u32 h, u32 rgba) {
+void mx_hud_box(u32 x, u32 y, u32 w, u32 h, u32 rgba) {
   u64 *c = mx_frame_direct(7);
   c = mx_e_ad_tag(c, 3, 1);
   c = mx_e_ad(c, MX_GS_REG_ALPHA_1, mx_gs_alpha(0, 1, 0, 1, 0));
@@ -121,13 +111,13 @@ __attribute__((unused)) static void hud_box(u32 x, u32 y, u32 w, u32 h, u32 rgba
 
 /* ---- strings ------------------------------------------------------------------ */
 
-static char *hud_cat(char *d, const char *s) {
+char *mx_hud_cat(char *d, const char *s) {
   while (*s)
     *d++ = *s++;
   *d = 0;
   return d;
 }
-static char *hud_u(char *d, u32 v) {
+char *mx_hud_u(char *d, u32 v) {
   char t[12];
   int n = 0;
   do
@@ -138,14 +128,11 @@ static char *hud_u(char *d, u32 v) {
   *d = 0;
   return d;
 }
-/* v with one decimal of v / div: "12.3" */
-__attribute__((unused)) static char *hud_u1(char *d, u64 v, u64 div) {
+char *mx_hud_u1(char *d, u64 v, u64 div) {
   u64 t = v * 10 / div;
-  d = hud_u(d, (u32)(t / 10));
+  d = mx_hud_u(d, (u32)(t / 10));
   *d++ = '.';
   *d++ = (char)('0' + t % 10);
   *d = 0;
   return d;
 }
-
-#endif

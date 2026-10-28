@@ -26,7 +26,7 @@ for f in "$HERE"/poly*.vuk; do
 done
 
 # The shaders and kernels of the demos, for their unit.
-for f in "$HERE"/../../demos/*/*.vuk; do
+for f in "$HERE"/../../examples/*/*.vuk "$HERE"/../../demos/*/*.vuk; do
   python3 -I "$HERE/vuk.py" "$f" -o "$TMP/s.ll" -H "$TMP/s.h" || { fail "$f: vuk"; continue; }
   "$LLVM/llc" -mtriple=vu -O3 -verify-machineinstrs "$TMP/s.ll" -o /dev/null 2> "$TMP/err" ||
     fail "$(basename "$f"): llc: $(head -1 "$TMP/err")"

@@ -36,7 +36,7 @@ static struct mx_kernel particles = {
 
 static const float DT = 1.0f / 60, G = 30;
 
-/* ---- the scene (as demos/scene/scene.c) ---------------------------------------- */
+/* ---- the scene (as examples/scene/scene.c) ---------------------------------------- */
 
 static void make_cube(void) {
   static const int axes[6][3][3] = {

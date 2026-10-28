@@ -2,7 +2,8 @@
 
 VU programs are written in HLSL and compiled by the toolchain's clang, opt and llc (GOAL_VU_HLSL,
 llvm `lib/Target/VU/VUEntryABI.md`). Each `[shader("vertex")]` or `[shader("compute")]` function
-of a `.hlsl` file in `demos/*/` or `tests/ps2/` is a micro program; the Makefile makes `<name>.o`
+of a `.hlsl` file in `examples/*/`, `tests/ps2/` or a program's `HLSL_DIRS` is a micro program;
+`mk/maxsdk.mk` makes `<name>.o`
 (the code, symbols `<name>_vu` and `<name>_vu_end`, section `.vutext`) and `<name>.h` (the data
 memory layout, `VU_<NAME>_...`). Programs for VU0 are listed in `HLSL_VU0`.
 
@@ -47,7 +48,7 @@ Out lvl2(In v) { ... }
 | Fields the GIF does not read | w of GIF_ST, z and w of GIF_UV, x, y and z of GIF_FOG (PACKED mode, float outputs): undefined, nothing computes them |
 | GIF register of an output | the semantic `GIF_RGBAQ GIF_ST GIF_UV GIF_XYZ2 GIF_XYZF2 GIF_FOG GIF_XYZ3 GIF_XYZF3`; two outputs to one register: `GIF_XYZF2_A`, `GIF_XYZF2_B` |
 | Skip a vertex (ADC) | bit 15 of XYZ2/XYZF2.w: add 2048 before `vu::ftoi4` (`demos/procgen/lvl3.hlsl`), or `o.xyz2.w = vu::adc(c)` for a 0/1 `c` |
-| Clipping | `vu::clip(v, w)` judges `v` against ±\|w\| (CLIPw) and keeps the last four judgements; `vu::clipped(mask)` is 1 when a flag of `mask` is set (FCAND): `0x3FFFF` the triangle of a strip that ends at this vertex (`demos/vumax/vh_scei.hlsl`). Once per vertex: the flags go from vertex to vertex |
+| Clipping | `vu::clip(v, w)` judges `v` against ±\|w\| (CLIPw) and keeps the last four judgements; `vu::clipped(mask)` is 1 when a flag of `mask` is set (FCAND): `0x3FFFF` the triangle of a strip that ends at this vertex (`examples/vumax/vh_scei.hlsl`). Once per vertex: the flags go from vertex to vertex |
 | Colours for GIF_RGBAQ | `vu::rgba8(c)`: rounded by the magic number 1.5 · 2^23 (one FMAC add, which joins an add of a uniform before it and a clamp by a constant; \|c\| < 2^22, the GIF reads the low 8 bits); `int4(c)` truncates, by an FTOI0 of its own |
 | State from vertex to vertex (strips) | a `static` variable that the program writes; each batch starts with its initializer |
 | Fixed point | `vu::ftoi4/12/15`, `vu::itof4/12/15` (FTOI/ITOF); `int4(f)`, `float4(i)` are FTOI0/ITOF0 |
@@ -125,4 +126,4 @@ is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 | `demos/model/mflat.hlsl`, `mlit.hlsl`, `mtex.hlsl`, `mskin.hlsl` | VU1, also indexed | the model demo: colour; one light; texture (mskin, skinning with 4 joints of a 24-joint palette: only a test, the demo skins on the EE) | `tests/ps2/ishader.c` (indexed = strips bit for bit, every batch size; mskin against the EE), `demos/model/model.c` (the same picture both ways) |
 | `lvl0..2` indexed | VU1 | | `tests/ps2/ishader.c` |
 | `tests/ps2/floor.hlsl`, `nest.hlsl` | VU0 | floor, nested run-time loops | `tests/ps2/floor.c`, `tests/ps2/loops.c` |
-| `demos/vumax/vh_*.hlsl` | VU1 | the twins of vumax's hand kernels: flat, Gouraud, textured, one light, SCEI (three lights, clipping) | `demos/vumax/vumax.c` part 1 (every batch size, against the EE) |
+| `examples/vumax/vh_*.hlsl` | VU1 | the twins of vumax's hand kernels: flat, Gouraud, textured, one light, SCEI (three lights, clipping) | `examples/vumax/vumax.c` part 1 (every batch size, against the EE) |

@@ -12,7 +12,7 @@
 | vsync period | 4 920 116 cycles (59.94 Hz) | NTSC interlaced frame mode | `probe/p3_gs.c` | 2026-10-23 |
 | 100 A+D writes with the checked packet builder | into uncached 2637, into SPR 2220 cycles (22–26 per quadword) | | `probe/p3_gs.c` | 2026-10-23 |
 | SIGNAL with a SIGLBLID update, LABEL, FINISH, IMR via `GsPutIMR`, local→host readback (VIF1 FDR + BUSDIR) | work as the manual says | | `tests/ps2/gs.c` | 2026-10-23 |
-| spin demo (synchronous frame loop: PATH3 + PATH1 + FINISH per frame) | 120 frames in 146 vsyncs (PCSX2: 119) | | `demos/spin/spin.c` | 2026-10-23 |
+| spin demo (synchronous frame loop: PATH3 + PATH1 + FINISH per frame) | 120 frames in 146 vsyncs (PCSX2: 119) | | `examples/spin/spin.c` | 2026-10-23 |
 
 Consequence: the checked packet builder costs ~25 cycles per quadword, 5–6x the DMA cost of the
 same data; hot loops should use the cursor emitters (D5a) or constant packets.
@@ -26,9 +26,9 @@ same data; hot loops should use the cursor emitters (D5a) or constant packets.
 | Emitters, 150 PACKED RGBAQ + XYZ2 vertices into SPR | 3.16 cycles/qw (checked builder 34.8) | | `probe/p5_fast.c` | 2026-10-23 |
 | GS LABEL, GIF DMA start until the EE sees it (polled SIGLBLID) | 236 / 323 cycles | 2-qw A+D packet | `probe/p5_fast.c` | 2026-10-23 |
 | A second SIGNAL while CSR.SIGNAL is still set **stops the GS** (the LABEL after it is not written); writing CSR.SIGNAL lets it go on, 208 cycles to the LABEL | | GS interrupts masked | `probe/p5_fast.c` | 2026-10-23 |
-| spin on the frame pipeline: 120 frames in 119 vsyncs, no missed vblank (the phase 3 synchronous loop: 146 vsyncs) | | | `demos/spin/spin.c` | 2026-10-23 |
-| scene, 64 textured lit cubes + a 64x64 texture streamed every frame: 240 frames in 239 vsyncs, missed 0; EE builds a frame in 70 k cycles | | | `demos/scene/scene.c` | 2026-10-23 |
-| scene without vsync, 256 cubes (3072 triangles): VU1 batches double buffered **440 k cycles/frame**, a FLUSHE after every batch 581 k: double buffering saves 24 % on the render path | | | `demos/scene/scene.c` | 2026-10-23 |
+| spin on the frame pipeline: 120 frames in 119 vsyncs, no missed vblank (the phase 3 synchronous loop: 146 vsyncs) | | | `examples/spin/spin.c` | 2026-10-23 |
+| scene, 64 textured lit cubes + a 64x64 texture streamed every frame: 240 frames in 239 vsyncs, missed 0; EE builds a frame in 70 k cycles | | | `examples/scene/scene.c` | 2026-10-23 |
+| scene without vsync, 256 cubes (3072 triangles): VU1 batches double buffered **440 k cycles/frame**, a FLUSHE after every batch 581 k: double buffering saves 24 % on the render path | | | `examples/scene/scene.c` | 2026-10-23 |
 
 ## Triangles (PLAN_PROCGEN P0, PS2, 2026-10-23, `probe/p9_gs.c`)
 
@@ -68,7 +68,7 @@ one kick). "side s" = right triangles of s×s/2 pixels in rows; ADC = vertices s
 | Moving context 1 to the target and back (`mx_frame_target`: VIF FLUSH + FRAME/ZBUF/XYOFFSET/SCISSOR) inside a frame | correct, in ring and chain mode | | `tests/ps2/rt.c` | 2026-10-27 |
 | Three display states (`mx_gs_displays(d, 3)`): frame k in buffer k % 3, waits for frame k − 2 to be shown | the three buffers hold the last three frames; 0 vblanks missed | 640×224 CT32 | `tests/ps2/rt.c` | 2026-10-27 |
 | `mx_gs_init` writing DISPFB1/DISPLAY1 = 0 (circuit 1 off) and, after SetGsCrt, all display registers = 0 before the real display | **the PS2 hung or dropped ps2link before the first printf** (twice; PCSX2 fine; once a run passed). Fixed by never writing an off circuit's registers and writing PMODE, DISPFB2, DISPLAY2, BGCOLOR before the GS interrupts are on, as the old init did; which of the two mattered is not isolated | NTSC 640×224 | `tests/ps2/gs.c`, batch | 2026-10-27 |
-| After `mx_video_set` (GS reset) PRMODECONT, COLCLAMP, TEST, TEXA must be written again before drawing | | | `tests/ps2/rt.c`, `demos/display` | 2026-10-27 |
+| After `mx_video_set` (GS reset) PRMODECONT, COLCLAMP, TEST, TEXA must be written again before drawing | | | `tests/ps2/rt.c`, `examples/display` | 2026-10-27 |
 
 ## Textures and MIPMAP (`src/gs/tex.c`, `<mx/tex.h>`)
 
@@ -111,7 +111,7 @@ DISPLAY units: DX/DW in VCK, DY/DH in raster lines (frame lines when interlaced)
 takes 2 DISPLAY lines in interlaced FRAME mode, else 1; `mx_display_regs` fits the largest
 MAGH/MAGV and centres the rectangle (by whole frames when interlaced).
 
-"Runs": the CRTC gives vblanks and `demos/display` draws in the mode (PS2, BIOS 2.00 PAL slim,
+"Runs": the CRTC gives vblanks and `examples/display` draws in the mode (PS2, BIOS 2.00 PAL slim,
 2026-10-27). "Screen": the picture's position was checked on a screen.
 
 | Mode | SetGsCrt | VCK × lines | DX, DY | Runs | Screen |
@@ -127,7 +127,7 @@ MAGH/MAGV and centres the rectangle (by whole frames when interlaced).
 A mode without vblanks hung every frame pipeline (each frame waits for the previous one to be
 shown at a vblank): `mx_video_set` now waits up to 100 ms for two vblanks and returns -1.
 
-`demos/display` shows every mode with a border at the picture's edge and lets the offsets be
+`examples/display` shows every mode with a border at the picture's edge and lets the offsets be
 moved with the pad (the values are on screen); offsets confirmed there go into this table.
 
 Consequences: the GS draws at most one Gouraud/textured triangle per 8 EE cycles (≈ 615 k
@@ -138,7 +138,7 @@ cycles per triangle on PATH1).
 
 ## The GS at its manual rates: gsmax (PS2, 2026-10-25)
 
-`demos/gsmax/gsmax.c`: every row of GS User's Manual 1.3 "Maximum Performance", PATH1 (a
+`examples/gsmax/gsmax.c`: every row of GS User's Manual 1.3 "Maximum Performance", PATH1 (a
 packet in VU1 memory kicked 9 times by `probe/kickn.vsm`, (9 kicks − 1 kick) / 8), REGLIST,
 primitives of 1–2 pixels, Z test GEQUAL with writes. GS cycles = EE cycles / 2. Floor = the
 larger of the manual's setup cycles and the registers sent (one per GS cycle).

@@ -1,127 +1,58 @@
-# maxsdk: build the library, tests and probes with clang (the LLVM R5900
-# toolchain in this tree; gcc is not supported).
+# maxsdk: build the library, tests, probes and examples with clang (the LLVM
+# R5900 toolchain in this tree; gcc is not supported). Programs on maxsdk
+# include mk/maxsdk.mk (the flags, the link and the VU and HLSL rules).
 #
-#   make [OUT=<dir>]                        library, test and probe ELFs
+#   make [OUT=<dir>]                        library, test, probe and example ELFs
+#   make lib                                libmx.a and crt0 only
 #   make test-host                          host tests (generated fields, packets)
 #   make check-deps                         fail if anything links ps2sdk
 #   make gen                                regenerate the hardware headers
 #
 # Output goes to toolchain/build/maxsdk/clang/ by default.
 
-HERE     := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-PS2MAX   := $(abspath $(HERE)/../../../..)
-OUT      ?= $(PS2MAX)/toolchain/build/maxsdk/clang
-LLVM     ?= $(PS2MAX)/toolchain/build/llvm/bin
-
-HOSTCC   ?= cc
-
-# -ffinite-math-only: the R5900 FPU has no INF/NaN, so clang only uses it for
-# finite math; without the flag it calls soft-float helpers (not in libmx).
-# -fno-math-errno: the math functions do not set errno, so sqrtf is sqrt.s.
-COMMON_CFLAGS = -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -ffreestanding \
-                -fno-common -ffinite-math-only -fno-math-errno -I$(HERE)/include -G0
-CC       = $(LLVM)/clang
-CFLAGS   = $(COMMON_CFLAGS) --target=mips64el -mcpu=r5900 -mabi=n32 -fno-pic -mno-abicalls \
-           -fomit-frame-pointer
-# $(call link,out,objs)
-link     = $(LLVM)/ld.lld -m elf32ltsmipn32 -T$(HERE)/ld/maxsdk.ld -z max-page-size=128 \
-           --gc-sections -Map $(1:.elf=.map) -o $(1) $(2)
-CFLAGS  += $(EXTRA_CFLAGS)
+HERE       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+PS2MAX     ?= $(abspath $(HERE)/../../../..)
+OUT        ?= $(PS2MAX)/toolchain/build/maxsdk/clang
+MAXSDK_OUT := $(OUT)
+HOSTCC     ?= cc
 
 LIB_SRCS := $(wildcard $(HERE)/src/*/*.c) $(wildcard $(HERE)/src/*/*.S)
 LIB_OBJS := $(patsubst $(HERE)/%,$(OUT)/obj/%.o,$(LIB_SRCS))
-LIB       = $(OUT)/libmx.a
-CRT0      = $(OUT)/obj/crt0.o
-HDRS     := $(wildcard $(HERE)/include/mx/*.h $(HERE)/include/mx/hw/*.h)
-
-# Each demo has a directory in demos/ (demos/common: VU code that several
-# use); program and VU program names are unique over all of them.
-DEMO_DIRS := $(patsubst %/,%,$(wildcard $(HERE)/demos/*/))
-
-# VU microcode (*.vsm, assembled by llvm-mc -triple=vu): each becomes an EE
-# object with the code between the symbols <name>_vu and <name>_vu_end.
-VSMS     := $(wildcard $(HERE)/tests/ps2/*.vsm $(HERE)/probe/*.vsm $(HERE)/demos/*/*.vsm)
-VU_OBJS  := $(patsubst %.vsm,$(OUT)/vu/%.o,$(notdir $(VSMS)))
-# the library's own (src/*/*.vsm) go into libmx.a
+LIB       = $(MX_LIB)
+CRT0      = $(MX_CRT0)
+HDRS      = $(MX_HDRS)
+# the library's own VU microcode (src/*/*.vsm) goes into libmx.a
 LIB_VSMS := $(wildcard $(HERE)/src/*/*.vsm)
 LIB_OBJS += $(patsubst %.vsm,$(OUT)/vu/%.o,$(notdir $(LIB_VSMS)))
-vpath %.vsm $(HERE)/tests/ps2 $(HERE)/probe $(DEMO_DIRS) $(sort $(dir $(LIB_VSMS)))
+vpath %.vsm $(sort $(dir $(LIB_VSMS)))
 # the VU0 renderer's feeder: its asm statements keep VF registers live
 $(OUT)/obj/src/vu/vu0r.c.o: CFLAGS += -mvu0 $(foreach r,$(shell seq 1 31),-ffixed-vf$(r))
 
-$(OUT)/vu/%.vu.elf: %.vsm
-	@mkdir -p $(dir $@)
-	$(LLVM)/llvm-mc -triple=vu -mcpu=vu1 -filetype=obj $< -o $@
-
-$(OUT)/vu/%.bin: $(OUT)/vu/%.vu.elf
-	$(LLVM)/llvm-objcopy -O binary --only-section=.vutext $< $@
-
-$(OUT)/vu/%.o: $(OUT)/vu/%.bin
-	printf '%s\n' '.section .vutext, "a"' '.balign 16' '.globl $*_vu' '$*_vu:' \
-	  '.incbin "$<"' '.globl $*_vu_end' '$*_vu_end:' > $(@:.o=.S)
-	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
-
-# HLSL programs (include/vu.hlsli): clang's HLSL for SPIR-V, then opt and
-# llc for the VU (VUHLSLAdapter, VUEntryLowering); the layout header <name>.h
-# from section .vu.header, wrapped like the microcode above. HLSL_VU0 lists
-# the programs for VU0; the others run on VU1. (-Wno-deprecated-builtins:
-# clang's own HLSL headers use them for max and min.)
-#
-# HLSL_IX: vertex programs that are also built indexed (docs/hlsl.md), from
-# the same <name>.hlsl as program <name>_ix: IX_N vertices per batch (or
-# IX_N_<name>), the header's macros VU_IX_<NAME>_..., MX_VU_SHADER(IX_<NAME>,
-# <name>_ix_vu, <name>_ix_vu_end). VU_OPT_FLAGS go to opt for every program
-# (e.g. -vu-contexts=1).
-VU_OPT_FLAGS ?=
-HLSLS     := $(wildcard $(HERE)/tests/ps2/*.hlsl $(HERE)/demos/*/*.hlsl)
-HLSL_IX   := lvl0 lvl1 lvl2 mflat mlit mtex mscei mskin
-IX_N      := 32
-HLSL_NAMES = $(basename $(notdir $(HLSLS))) $(addsuffix _ix,$(HLSL_IX))
-HLSL_OBJS := $(patsubst %,$(OUT)/hlsl/%.o,$(HLSL_NAMES))
-HLSL_HDRS := $(patsubst %,$(OUT)/hlsl/%.h,$(HLSL_NAMES))
-HLSL_VU0  := fbm dust floor nest
-vpath %.hlsl $(HERE)/tests/ps2 $(DEMO_DIRS)
-CFLAGS   += -I$(OUT)/hlsl
-VU_CPU    = $(if $(filter $*,$(HLSL_VU0)),vu0,vu1)
-
-$(OUT)/hlsl/%.spv.ll: %.hlsl $(HERE)/include/vu.hlsli $(LLVM)/clang
-	@mkdir -p $(dir $@)
-	$(LLVM)/clang -cc1 -triple spirv-unknown-vulkan1.3-library -x hlsl -emit-llvm -O2 \
-	  -finclude-default-header -I$(HERE)/include -Wno-deprecated-builtins $< -o $@
-
-$(OUT)/hlsl/%.vu.ll: $(OUT)/hlsl/%.spv.ll $(LLVM)/opt
-	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=$(VU_CPU) $(VU_OPT_FLAGS) $< -S -o $@
-
-# the indexed program from the same SPIR-V (the shorter stem wins over the
-# rule above)
-$(OUT)/hlsl/%_ix.vu.ll: $(OUT)/hlsl/%.spv.ll $(LLVM)/opt
-	$(LLVM)/opt -mtriple=vu -O2 -vu-cpu=vu1 -vu-indexed=$(or $(IX_N_$*),$(IX_N)) \
-	  -vu-header-prefix=VU_IX_ $(VU_OPT_FLAGS) $< -S -o $@
-
-$(OUT)/hlsl/%.vu.elf: $(OUT)/hlsl/%.vu.ll $(LLVM)/llc
-	$(LLVM)/llc -mtriple=vu -mcpu=$(VU_CPU) -O3 -filetype=obj $< -o $@
-
-$(OUT)/hlsl/%.h: $(OUT)/hlsl/%.vu.elf
-	$(LLVM)/llvm-objcopy --dump-section .vu.header=$@.tmp $< /dev/null
-	{ echo '/* generated from $*.hlsl */'; echo '#ifndef $(shell echo $* | tr a-z A-Z)_H'; \
-	  echo '#define $(shell echo $* | tr a-z A-Z)_H'; cat $@.tmp; echo '#endif'; } > $@
-	rm -f $@.tmp
-
-$(OUT)/hlsl/%.bin: $(OUT)/hlsl/%.vu.elf
-	$(LLVM)/llvm-objcopy -O binary --only-section=.vutext $< $@
-
-$(OUT)/hlsl/%.o: $(OUT)/hlsl/%.bin
-	printf '%s\n' '.section .vutext, "a"' '.balign 16' '.globl $*_vu' '$*_vu:' \
-	  '.incbin "$<"' '.globl $*_vu_end' '$*_vu_end:' > $(@:.o=.S)
-	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
+# Each example has a directory in examples/; the tests' and probes' VU and
+# HLSL programs and the examples' share one namespace (VSM_DIRS, HLSL_DIRS).
+# tests/ps2 has its own copies of the programs of apps that it tests (the
+# model's m*.hlsl, procgen's lvl*, tf*, fbm, ...), probe/ of vu0skin.vsm.
+EXAMPLE_DIRS := $(patsubst %/,%,$(wildcard $(HERE)/examples/*/))
+VSM_DIRS     := $(HERE)/tests/ps2 $(HERE)/probe $(EXAMPLE_DIRS)
+HLSL_DIRS    := $(HERE)/tests/ps2 $(EXAMPLE_DIRS)
+HLSL_IX      := lvl0 lvl1 lvl2 mflat mlit mtex mscei mskin
+HLSL_VU0     := fbm floor nest
+include $(HERE)/mk/maxsdk.mk
 
 TESTS    := $(patsubst $(HERE)/tests/ps2/%.c,$(OUT)/tests/%.elf,$(wildcard $(HERE)/tests/ps2/*.c))
 PROBES   := $(patsubst $(HERE)/probe/%.c,$(OUT)/probe/%.elf,$(wildcard $(HERE)/probe/*.c))
-DEMO_SRCS := $(wildcard $(HERE)/demos/*/*.c)
-DEMOS    := $(patsubst %.c,$(OUT)/demos/%.elf,$(notdir $(DEMO_SRCS)))
-vpath %.c $(DEMO_DIRS)
+EXAMPLES := $(patsubst %.c,$(OUT)/examples/%.elf,$(notdir $(wildcard $(HERE)/examples/*/*.c)))
+vpath %.c $(EXAMPLE_DIRS)
 
-all: $(LIB) $(CRT0) $(TESTS) $(PROBES) $(DEMOS) $(OUT)/batch/ps2batch.elf
+# The apps still in this tree (demos/<name>, each with its own Makefile on
+# mk/maxsdk.mk), built into $(OUT)/demos/<name>.
+APPS     := $(notdir $(patsubst %/,%,$(wildcard $(HERE)/demos/*/)))
+
+all: $(LIB) $(CRT0) $(TESTS) $(PROBES) $(EXAMPLES) $(OUT)/batch/ps2batch.elf apps
+lib: $(LIB) $(CRT0)
+
+apps: $(LIB) $(CRT0)
+	for a in $(APPS); do $(MAKE) -C $(HERE)/demos/$$a OUT=$(OUT)/demos/$$a MAXSDK_OUT=$(OUT) || exit; done
 
 $(OUT)/obj/%.c.o: $(HERE)/%.c $(HDRS)
 	@mkdir -p $(dir $@)
@@ -142,14 +73,14 @@ $(LIB): $(LIB_OBJS)
 	rm -f $@
 	$(LLVM)/llvm-ar rcs $@ $^
 
-# Each test or probe is one C file, linked with crt0 and libmx only (libmx
-# has the compiler helper functions; no libgcc).
-$(OUT)/tests/%.elf: $(HERE)/tests/ps2/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
+# Each test, probe or example is one C file, linked with crt0 and libmx only
+# (libmx has the compiler helper functions; no libgcc).
+$(OUT)/tests/%.elf: $(HERE)/tests/ps2/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(MX_LD)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 
-$(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
+$(OUT)/probe/%.elf: $(HERE)/probe/%.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(MX_LD)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(PROBE_CFLAGS) -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
@@ -162,61 +93,11 @@ $(OUT)/probe/p16_vu0reg.elf: PROBE_CFLAGS = -mvu0 -fapprox-func
 # all VF registers reserved: the VU0 programs it calls write most of them
 $(OUT)/probe/p17_vu0c.elf: PROBE_CFLAGS = -mvu0 $(foreach r,$(shell seq 1 31),-ffixed-vf$(r))
 
-# A demo's C file finds the headers of its directory and demos/common, and
-# links the data of DEMO_OBJS_<program>.
-.SECONDEXPANSION:
-$(OUT)/demos/%.elf: %.c $$(DEMO_OBJS_$$*) $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) \
-                    $(HDRS) $(HERE)/ld/maxsdk.ld
+# An example's C file finds the headers of its directory.
+$(OUT)/examples/%.elf: %.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(MX_LD)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_$*) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
-
-# The model demo's model, built in (tools/model/gltf2mxm.py: Python 3 and
-# Pillow), made for the indexed programs it draws with.
-MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mscei)
-DEMO_OBJS_model := $(OUT)/demos/model/fox_mxm.o
-# model.c: VU0 macro mode; approximate functions for VRSQRT (the skinning's normals)
-$(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf $(OUT)/demos/model_shots.elf \
-  $(OUT)/demos/model_mipshots.elf: CFLAGS += -mvu0 -fapprox-func
-
-$(OUT)/demos/model/fox.mxm: $(HERE)/demos/model/assets/Fox.glb $(HERE)/tools/model/gltf2mxm.py \
-                            $(MODEL_IX)
-	@mkdir -p $(dir $@)
-	python3 -I -B $(HERE)/tools/model/gltf2mxm.py $< $@ --limits $(MODEL_IX)
-
-# model_rec<n>.elf: the model demo recording MODEL_RECORD frames of n x n
-# copies as host:rec_*.tga (tools/model/frames2video.py makes a video of them).
-MODEL_RECORD ?= 90
-$(OUT)/demos/model_rec%.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LIB) $(CRT0) \
-                             $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DMODEL_RECORD=$(MODEL_RECORD) -DMODEL_RECORD_COPIES=$* -I$(dir $<) \
-	  -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
-
-model-record: $(OUT)/demos/model_rec1.elf $(OUT)/demos/model_rec8.elf
-
-# model_shots.elf: still pictures of the model with each AA1 and supersampling
-# mode as host:shot_*.tga (MODEL_SHOTS).
-$(OUT)/demos/model_shots.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LIB) $(CRT0) \
-                              $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DMODEL_SHOTS -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
-
-# model_mipshots.elf: still pictures of the model in each MIPMAP mode at four
-# distances as host:mip_*.tga (MODEL_MIPSHOTS).
-$(OUT)/demos/model_mipshots.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LIB) $(CRT0) \
-                                 $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -DMODEL_MIPSHOTS -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
-	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
-
-$(OUT)/demos/model/%_mxm.o: $(OUT)/demos/model/%.mxm
-	printf '%s\n' '.section .rodata.model, "a"' '.balign 64' '.globl model_$*' 'model_$*:' \
-	  '.incbin "$<"' '.globl model_$*_end' 'model_$*_end:' > $(@:.o=.S)
-	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
-
+	$(CC) $(CFLAGS) -I$(dir $<) -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 # ---- C library and C++ runtime (phase 8, D8c) -------------------------------
 # picolibc (built by `make picolibc` into PICOLIBC) with maxsdk's glue
 # (libc/: stdio on the debug output, sbrk, _exit, a minimal C++ runtime, and
@@ -273,12 +154,12 @@ $(LIBMXC): $(OUT)/libc/glue.c.o $(OUT)/libc/compat.c.o $(OUT)/libc/atomic.c.o $(
 LIBC_TESTS := $(patsubst $(HERE)/tests/libc/%,$(OUT)/libc/tests/%.elf,\
                 $(basename $(wildcard $(HERE)/tests/libc/*.c $(HERE)/tests/libc/*.cc)))
 
-$(OUT)/libc/tests/%.elf: $(HERE)/tests/libc/%.c $(LIBMXC) $(LIB) $(CRT0) $(RT_BUILTINS) $(HERE)/ld/maxsdk.ld
+$(OUT)/libc/tests/%.elf: $(HERE)/tests/libc/%.c $(LIBMXC) $(LIB) $(CRT0) $(RT_BUILTINS) $(MX_LD)
 	@mkdir -p $(dir $@)
 	$(CC) $(LIBC_CFLAGS) -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(LIBC_LIBS))
 
-$(OUT)/libc/tests/%.elf: $(HERE)/tests/libc/%.cc $(LIBMXC) $(LIB) $(CRT0) $(RT_BUILTINS) $(HERE)/ld/maxsdk.ld
+$(OUT)/libc/tests/%.elf: $(HERE)/tests/libc/%.cc $(LIBMXC) $(LIB) $(CRT0) $(RT_BUILTINS) $(MX_LD)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(LIBC_LIBS))
@@ -305,7 +186,7 @@ picolibc:
 
 BATCH_SRCS := tests/ps2/dma.c tests/ps2/gs.c tests/ps2/vif.c tests/ps2/vu.c \
               tests/ps2/frame.c probe/p2_dma.c probe/p3_gs.c probe/p4_vu.c probe/p5_fast.c \
-              demos/spin/spin.c demos/scene/scene.c demos/allunits/allunits.c tests/ps2/thread.c \
+              examples/spin/spin.c examples/scene/scene.c examples/allunits/allunits.c tests/ps2/thread.c \
               tests/ps2/dbit.c
 BATCH_OBJS := $(patsubst %.c,$(OUT)/batch/%.o,$(BATCH_SRCS))
 
@@ -314,7 +195,7 @@ $(OUT)/batch/%.o: $(HERE)/%.c $(HDRS) $(HLSL_HDRS)
 	$(CC) $(CFLAGS) -DMX_BATCH -Dmain=$(notdir $*)_main -I$(HERE)/tests/ps2 -c $< -o $@
 
 $(OUT)/batch/ps2batch.elf: $(HERE)/tests/batch/ps2batch.c $(BATCH_OBJS) $(LIB) $(CRT0) $(VU_OBJS) \
-                           $(HLSL_OBJS) $(HERE)/ld/maxsdk.ld
+                           $(HLSL_OBJS) $(MX_LD)
 	$(CC) $(CFLAGS) -DMX_BATCH -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(BATCH_OBJS) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 
@@ -341,8 +222,9 @@ test-host: $(HOST_BIN)
 # Nothing from ps2sdk: no ps2sdk path in any link map, no include of a ps2sdk
 # header (the compiler is never given -I$PS2SDK), and no known ps2sdk symbol.
 check-deps: all
-	@! grep -l -i "ps2sdk" $(OUT)/tests/*.map $(OUT)/probe/*.map $(OUT)/demos/*.map 2>/dev/null
-	@! $(LLVM)/llvm-nm $(TESTS) $(PROBES) $(DEMOS) 2>/dev/null | \
+	@! grep -l -i "ps2sdk" $(OUT)/tests/*.map $(OUT)/probe/*.map $(OUT)/examples/*.map \
+	  $(OUT)/demos/*/*.map 2>/dev/null
+	@! $(LLVM)/llvm-nm $(TESTS) $(PROBES) $(EXAMPLES) $(wildcard $(OUT)/demos/*/*.elf) 2>/dev/null | \
 	  grep -E " (SifInitRpc|sceSifInitRpc|_ps2sdk_|InitMainThread|_InitSys|_libcglue)"
 	@echo "check-deps: no ps2sdk"
 
@@ -352,5 +234,4 @@ gen:
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all batch libc picolibc test-host check-deps gen clean model-record
-.SECONDARY:
+.PHONY: all lib apps batch libc picolibc test-host check-deps gen clean

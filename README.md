@@ -13,7 +13,9 @@ make check-deps      # fails if anything references ps2sdk
 make gen             # regenerate include/mx/hw/*.h, include/mx/bios.h, src/base/syscalls.S
 ```
 
-VU programs are HLSL (`demos/*/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
+VU programs are HLSL (`examples/*/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
+A program on maxsdk includes `mk/maxsdk.mk`: the compiler flags, the link, and the rules for its
+`.vsm` and `.hlsl` programs (`demos/model/Makefile` is an example).
 
 Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with the `ps2-hw-test` skill
 (it takes the PS2 lock and waits for the restart after the run). Every test ends with
@@ -24,19 +26,24 @@ source lines (build with `EXTRA_CFLAGS=-g` for the lines). Without frame pointer
 after `ra` are return addresses found on the stack by a heuristic, so one can be stale.
 `tests/ps2/crash.c` crashes on purpose to show it, so it always ends with status 255: scripts
 that run every test and expect status 0 must skip it.
-`make batch` builds `batch/ps2batch.elf`: all PS2 tests, the phase 2–5 probes and the demos
-(spin, scene, allunits) in one ELF, so one PS2 run covers them.
+`make batch` builds `batch/ps2batch.elf`: all PS2 tests, the phase 2–5 probes and the
+examples spin, scene and allunits in one ELF, so one PS2 run covers them.
 
-Each demo has its own directory in `demos/` (`demos/common/`: what several use):
+Each example has its own directory in `examples/`:
 
-| Demo | |
+| Example | |
 |---|---|
 | `spin`, `scene`, `allunits` | phase 3, 6, 7 |
-| `procgen` (`procgen.c`, `levels.c`) | generated terrain flight, the VU1 shader levels |
-| `model` | a glTF model (`tools/model/gltf2mxm.py`; built in: the Khronos Fox), turning and walking, drawn with HLSL shaders as strips or indexed (`opt -vu-indexed`), up to 16 × 16 copies; the vertices and triangles a second of each. `ps2client execee host:model.elf host:<model>.mxm` loads another model. Textures have MIPMAP levels (L1: on, trilinear, level colours, off; R1: bias); `model_mipshots.elf` saves each mode at four distances as `host:mip_*.tga`. `-vu0`: the first copy is drawn by the EE and VU0 over PATH3 while VU1 draws the others (the run checks it gives VU1's picture). `make model-record` builds `model_rec1.elf` / `model_rec8.elf`, which save 90 frames as `host:rec_*.tga` (`tools/model/frames2video.py` makes a GIF or MP4) |
 | `vumax` | the VU1 vertex rate at the floor for six standard vertex programs (flat, Gouraud, textured, one light, lit + textured, ps2gl's SCEI): hand-scheduled kernels (`tools/vusched/vusched.py`) against the EE for every batch size, then throughput with and without the GS, next to the same programs in HLSL ([docs/vu1.md](docs/vu1.md)). Options: `s<k>` one scenario, `t` throughput only, `k` kernels alone, `c` plain DMA chain |
 | `display` | every video mode (NTSC/PAL interlaced and progressive, 480p, 576p, 720p, 1080i, VESA) with the picture's edge marked, and the two read circuits merged: an overlay over 2x magnified animation, a crossfade, a fade to black, the smooth filter. Pad: left/right mode, square scene, d-pad/L1/R1 move the picture; without a press it shows each once and exits |
 | `gsmax` | the GS at the rates of the GS manual's performance tables (setup per primitive type, fill rate), over PATH1 ([docs/gif-gs.md](docs/gif-gs.md)) |
+
+The apps in `demos/` (each with its own Makefile on `mk/maxsdk.mk`; they move out of maxsdk):
+
+| Demo | |
+|---|---|
+| `procgen` (`procgen.c`, `levels.c`) | generated terrain flight, the VU1 shader levels |
+| `model` | a glTF model (`tools/model/gltf2mxm.py`; built in: the Khronos Fox), turning and walking, drawn with HLSL shaders as strips or indexed (`opt -vu-indexed`), up to 16 × 16 copies; the vertices and triangles a second of each. `ps2client execee host:model.elf host:<model>.mxm` loads another model. Textures have MIPMAP levels (L1: on, trilinear, level colours, off; R1: bias); `model_mipshots.elf` saves each mode at four distances as `host:mip_*.tga`. `-vu0`: the first copy is drawn by the EE and VU0 over PATH3 while VU1 draws the others (the run checks it gives VU1's picture). `make model-record` builds `model_rec1.elf` / `model_rec8.elf`, which save 90 frames as `host:rec_*.tga` (`tools/model/frames2video.py` makes a GIF or MP4) |
 
 The model converter needs Python 3 and Pillow.
 
@@ -54,11 +61,11 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | 0 | repo, generator (`gen/`), host tests, `docs/` | `make test-host` |
 | 1 | crt0, linker script, BIOS syscall stubs, mini C runtime, printf, SIF tty client | `tests/ps2/hello.c` |
 | 2 | interrupt dispatcher, DMA in every mode, MFIFO, stall control, interrupt-refilled queues + fences, timers, trace | `tests/ps2/dma.c`, `probe/p2_dma.c` |
-| 3 | DMA/VIF/GIF packet builder, GS setup, FINISH/SIGNAL/vsync, frame loop, upload, readback | `tests/ps2/gs.c`, `tests/ps2/vif.c`, `probe/p3_gs.c`, `demos/spin/spin.c` |
+| 3 | DMA/VIF/GIF packet builder, GS setup, FINISH/SIGNAL/vsync, frame loop, upload, readback | `tests/ps2/gs.c`, `tests/ps2/vif.c`, `probe/p3_gs.c`, `examples/spin/spin.c` |
 | 4 | VU reset/control, COP2 transfers, microcode residency, kernels + queues, double buffering, T-bit, DMA readback | `tests/ps2/vu.c`, `probe/p4_vu.c`, `bench/vudemo` |
 | 5 | cursor emitters (`<mx/emit.h>`), MPG by ref tags, polled MARK waits, VU0 DMA readback, unit-state sampling, vuk launch parameters | `tests/host/test_emit.c`, `tests/ps2/vu.c`, `probe/p5_fast.c` |
-| 6 | render pipeline (`<mx/frame.h>`): MFIFO-fed VIF1 stream, VU1 render kernel with double buffering + XGKICK, PATH3 textures, GS register cache, vblank accounting, VU1 compute between passes | `tests/ps2/frame.c`, `demos/scene/scene.c`, `demos/spin/spin.c` |
-| 7 | `mx_sched` (`<mx/sched.h>`): pollers, pools, VU workers; all units at once | `demos/allunits/allunits.c`, `bench/vudemo` (sched) |
+| 6 | render pipeline (`<mx/frame.h>`): MFIFO-fed VIF1 stream, VU1 render kernel with double buffering + XGKICK, PATH3 textures, GS register cache, vblank accounting, VU1 compute between passes | `tests/ps2/frame.c`, `examples/scene/scene.c`, `examples/spin/spin.c` |
+| 7 | `mx_sched` (`<mx/sched.h>`): pollers, pools, VU workers; all units at once | `examples/allunits/allunits.c`, `bench/vudemo` (sched) |
 | 8 | threads and semaphores on fences (`<mx/thread.h>`), picolibc + glue (`libc/`), compiler-rt builtins, a minimal C++ runtime, ps2sdk compat headers for bench (`compat/`) | `tests/ps2/thread.c`, `tests/libc/libc.c`, `tests/libc/cxx.cc`, `bench` (`SDK=maxsdk`) |
 
 ## Layout
@@ -72,13 +79,16 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | `src/vu/` | VU control, kernels and streaming |
 | `src/gs/video.c`, `rt.c`, `display.c` | video modes (`<mx/video.h>`), render targets in either GS context, also read as textures (`<mx/rt.h>`), what the two read circuits show and how they merge, per frame (`<mx/display.h>`) |
 | `src/gs/frame3.c`, `src/vu/vu0r.c`, `vu0scei.vsm` | a second frame stream of GS packets over PATH3 next to VU1's (`mx_frame3_*` in `<mx/frame.h>`, GS context 2); the SCEI renderer on the EE and VU0 fed through VF registers into it (`<mx/vu0r.h>`) |
+| `src/gs/hud.c`, `src/vu/render.vsm` | on-screen text and boxes (`<mx/hud.h>`); the VU1 render kernel of the frame pipeline (`render_vu`) |
 | `src/gs/tex.c` | textures with MIPMAP levels (`<mx/tex.h>`): the level layout, TEX0/TEX1/MIPTBP of either context, uploads, K from the texel density, levels made by the GS for render targets |
 | `src/gs/frame.c`, `src/sched/`, `src/thread/` | the render pipeline, the scheduler, threads |
 | `libc/`, `compat/ps2sdk/` | picolibc glue, C++ runtime, atomics; the ps2sdk headers bench needs |
 | `crt/`, `ld/` | crt0 and the linker script |
 | `tests/host/`, `tests/ps2/` | host tests, PCSX2/PS2 tests |
 | `probe/` | one ELF per hardware question; results go to `docs/` |
-| `demos/<name>/` | the demos, one directory each (`demos/common/`: shared VU code and headers) |
+| `examples/<name>/` | the examples, one directory each |
+| `demos/<name>/` | the apps still in this tree, each with its own Makefile |
+| `mk/maxsdk.mk` | what a program on maxsdk includes: flags, link, the VU and HLSL rules |
 | `tools/model/` | glTF → MXM model converter, frames → video |
 
 ## Decisions (PLAN_MAXSDK.md section 7)
