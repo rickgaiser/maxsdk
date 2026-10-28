@@ -11,7 +11,7 @@
 # Output goes to toolchain/build/maxsdk/clang/ by default.
 
 HERE       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-PS2MAX     ?= $(abspath $(HERE)/../../../..)
+PS2MAX     ?= $(abspath $(HERE)/../..)
 OUT        ?= $(PS2MAX)/toolchain/build/maxsdk/clang
 MAXSDK_OUT := $(OUT)
 HOSTCC     ?= cc
@@ -110,7 +110,7 @@ PICOLIBC     ?= $(PS2MAX)/toolchain/build/picolibc/install
 PICOLIBC_SRC ?= $(PS2MAX)/toolchain/build/picolibc/src
 # compiler-rt's generic builtins, built like libmx (non-PIC; the toolchain's
 # own libclang_rt.builtins.a is PIC and its GOT relocations do not link here)
-RT_DIR       ?= $(abspath $(HERE)/../llvm-project/compiler-rt/lib/builtins)
+RT_DIR       ?= $(PS2MAX)/toolchain/generic/llvm/llvm-project/compiler-rt/lib/builtins
 RT_SKIP       = divxc3 emutls enable_execute_stack eprintf extendhfxf2 fixunsxfdi fixunsxfsi \
                 fixunsxfti fixxfdi fixxfti floatdixf floattixf floatundixf floatuntixf mulxc3 \
                 powixf2 truncdfbf2 truncsfbf2 truncxfhf2 clear_cache trampoline_setup \

@@ -5,7 +5,7 @@
 
 HERE      := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 MAXSDK    ?= $(abspath $(HERE)/../..)
-PS2MAX    ?= $(abspath $(MAXSDK)/../../../..)
+PS2MAX    ?= $(abspath $(MAXSDK)/../..)
 OUT       ?= $(PS2MAX)/toolchain/build/maxsdk/clang/demos/model
 VSM_DIRS  := $(HERE)
 HLSL_DIRS := $(HERE)

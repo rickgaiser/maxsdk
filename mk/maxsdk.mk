@@ -18,7 +18,7 @@
 MAXSDK     := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 # the includer's first target stays the default goal
 MX_GOAL    := $(.DEFAULT_GOAL)
-PS2MAX     ?= $(abspath $(MAXSDK)/../../../..)
+PS2MAX     ?= $(abspath $(MAXSDK)/../..)
 LLVM       ?= $(PS2MAX)/toolchain/build/llvm/bin
 MAXSDK_OUT ?= $(PS2MAX)/toolchain/build/maxsdk/clang
 
