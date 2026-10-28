@@ -348,5 +348,8 @@ void mx_frame_shader_call(const struct mx_shader *s, u32 prim, const void *uni,
    without waiting. The chain is built in the slot's own buffer. Returns 0,
    or -1 if the slot's previous upload is still running. */
 int mx_frame_texture(int slot, u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, const void *data);
+/* The same for the levels of t, level n from data[n], in one chain. */
+struct mx_tex;
+int mx_frame_tex_upload(int slot, const struct mx_tex *t, const void *const *data);
 
 #endif

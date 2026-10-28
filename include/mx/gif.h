@@ -86,6 +86,12 @@ MX_INLINE u64 mx_gs_tex1(u32 lcm, u32 mxl, u32 mmag, u32 mmin, u32 mtba, u32 l, 
          MX_SET(GS_TEX1_MMIN, mmin) | MX_SET(GS_TEX1_MTBA, mtba) | MX_SET(GS_TEX1_L, l) |
          MX_SET(GS_TEX1_K, k);
 }
+/* MIPTBP1 (levels 1-3) or MIPTBP2 (levels 4-6): the same layout */
+MX_INLINE u64 mx_gs_miptbp(u32 tbp_a, u32 tbw_a, u32 tbp_b, u32 tbw_b, u32 tbp_c, u32 tbw_c) {
+  return MX_SET(GS_MIPTBP1_TBP1, tbp_a) | MX_SET(GS_MIPTBP1_TBW1, tbw_a) |
+         MX_SET(GS_MIPTBP1_TBP2, tbp_b) | MX_SET(GS_MIPTBP1_TBW2, tbw_b) |
+         MX_SET(GS_MIPTBP1_TBP3, tbp_c) | MX_SET(GS_MIPTBP1_TBW3, tbw_c);
+}
 MX_INLINE u64 mx_gs_clamp(u32 wms, u32 wmt, u32 minu, u32 maxu, u32 minv, u32 maxv) {
   return MX_SET(GS_CLAMP_WMS, wms) | MX_SET(GS_CLAMP_WMT, wmt) | MX_SET(GS_CLAMP_MINU, minu) |
          MX_SET(GS_CLAMP_MAXU, maxu) | MX_SET(GS_CLAMP_MINV, minv) | MX_SET(GS_CLAMP_MAXV, maxv);

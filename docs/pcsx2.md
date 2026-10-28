@@ -2,6 +2,10 @@
 
 Correctness notes only. PCSX2 (flatpak 2.5.x) timings are never performance data.
 
+Screenshots (`host:*.tga`) and pictures read back from GS memory are taken with the software
+renderer (`Renderer = 13` in `[EmuCore/GS]` of the flatpak's `inis/PCSX2.ini`, since
+2026-10-28): the hardware renderers approximate GS features such as MIPMAP level selection.
+
 | Behaviour | PS2 | PCSX2 | Source |
 |---|---|---|---|
 | Multiplier with a power of two in fs | 1 ULP low | exact in both orders | `bench/vudemo/mulprobe.c` |

@@ -38,7 +38,8 @@
    (mx_gs_smooth: half a pixel across, or a line down, blended); -ss [n]:
    supersampling, n samples a pixel (4, 8, 16, 32; ss_fit); -nocull: each
    tile draws all clusters, not only those that reach it. R3: the next of
-   quality[] (AA1, the filters, supersampling). -cutout: the
+   quality[] (AA1, the filters, supersampling). -mip off|on|tri|col,
+   -mipbias <n>: MIPMAP (mip_mode, by default on). -cutout: the
    materials with alpha only cut out (alpha test), not blended. -nophys: no
    springs (MXM_PHYS: joints such as hair and cloth pulled towards the
    animation by springs, live, in world space). -mfifo: the frame stream
@@ -65,6 +66,8 @@
      CIRCLE              next animation
      L2                  turning on/off            R2                 vsync on/off (off)
      SELECT              next outfit / model       R3                 AA1 / filters / SS 4, 16
+     L1                  MIPMAP: on / trilinear / level colours / off
+     R1                  MIPMAP bias: -1, -1/2, 0, +1/2, +1 level
      SELECT + START      end
 
    The view is never nearer than the whole model fits the guard band (the
@@ -81,6 +84,7 @@
 #include <mx/mx.h>
 #include <mx/pad.h>
 #include <mx/sif.h>
+#include <mx/tex.h>
 #include "hud.h"
 #include "mflat.h"
 #include "mflat_ix.h"
@@ -206,8 +210,9 @@ static struct {
   const struct mxm_mat *mat;
   const struct mxm_pal *pal;
   const struct mxm_anim *anim;
-  u32 tbp[MAX_MAT], cbp[MAX_MAT]; /* the textures and the CLUTs (T8) in GS memory */
-  u32 tbp_free; /* the first block after the textures */
+  struct mx_tex tex[MAX_MAT]; /* the textures with their levels and CLUTs (T8) */
+  struct mx_tex probe;        /* MIP_COLOURS: a level a colour */
+  u32 tbp_free;               /* the first block after the textures */
   const char *name;
   int skinned; /* animations, a palette */
   int ee_skin; /* and the EE can skin it */
@@ -246,6 +251,34 @@ static float lod_r0 = 512;
 
 /* The model at base (size bytes): checked, its indices made for each
    number of outputs, its textures uploaded. Returns 0, or -1. */
+/* MIPMAP (L1; -mip off|on|tri|col): level 0 only (bilinear), the nearest
+   level (bilinear), between the two nearest (trilinear), or a colour for
+   each level instead of the texture (point sampled: which level is used
+   where). The level comes from K = the material's texel density (mxm_mat
+   lod) over the pixels a model unit at w = 1, plus mip_bias (R1; -mipbias
+   <n>: n / 16 of a level, more is softer). */
+enum { MIP_OFF, MIP_ON, MIP_TRI, MIP_COLOURS, MIP_N };
+static const char *const mip_names[MIP_N] = {"", "  MIP", "  TRILINEAR", "  MIP COLOURS"};
+static int mip_mode = MIP_ON;
+static s32 mip_bias;
+
+/* MIP_COLOURS: 64 x 64 .. 2 x 2, red, yellow, green, cyan, blue, magenta */
+#define PROBE_LEVELS 6
+static u32 probe_px[64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2] MX_ALIGNED(64);
+static const void *const *probe_levels(void) {
+  static const u32 col[PROBE_LEVELS] = {0x800000FF, 0x8000FFFF, 0x8000FF00,
+                                        0x80FFFF00, 0x80FF0000, 0x80FF00FF};
+  static const void *lv[PROBE_LEVELS];
+  u32 *p = probe_px;
+  for (u32 n = 0; n < PROBE_LEVELS; n++) {
+    lv[n] = p;
+    for (u32 i = 0; i < (64u >> n) * (64u >> n); i++)
+      *p++ = col[n];
+  }
+  mx_dcache_writeback(probe_px, sizeof probe_px);
+  return lv;
+}
+
 static int model_open(const u8 *base, u32 size, const struct mx_shader *const *ix, u32 nix) {
   const struct mxm_header *h = (const void *)base;
   M.h = h, M.base = base;
@@ -402,40 +435,51 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
     for (int o = 0; o < 2; o++)
       ibatch[o][c] = (struct mx_ibatch){M.cl[c].first, M.cl[c].nv, M.cl[c].ni,
                                         idx_buf[o] + M.cl[c].idx};
-  /* the textures after the framebuffers, each from a page (T8 pages are
-     128 x 64, CT32 ones 64 x 32); then the CLUTs, 4 blocks each */
+  /* the textures after the framebuffers, each with its MIPMAP levels from
+     a page (mx_tex_init); then the CLUTs, 4 blocks each; then the level
+     colours (MIP_COLOURS) */
   u32 tbp = mx_gs.tbp, nclut = 0;
   const u8 *tex = sec(MXM_TEX);
   for (u32 m = 0; m < h->nmat; m++) {
     const struct mxm_mat *mt = &M.mat[m];
-    u32 w = 1u << mt->tw, hh = 1u << mt->th, t8 = mt->psm == MXM_TEX_T8;
-    u32 pages = t8 ? (w < 128 ? 1 : w / 128) * ((hh + 63) / 64)
-                   : (w < 64 ? 1 : w / 64) * ((hh + 31) / 32);
-    if (tbp + pages * 32 > GS_BLOCKS - HUD_BLOCKS) {
+    struct mx_tex *t = &M.tex[m];
+    u32 t8 = mt->psm == MXM_TEX_T8, levels = mt->levels ? mt->levels : 1;
+    u32 b = mx_tex_init(t, tbp, t8 ? MX_GS_PSM_T8 : MX_GS_PSM_CT32, mt->tw, mt->th, levels,
+                        MX_TEX_PACKED);
+    if (tbp + ((b + 31) & ~31u) > GS_BLOCKS - HUD_BLOCKS) {
       mx_printf("model: the textures do not fit the GS memory\n");
       return -1;
     }
-    M.tbp[m] = tbp;
-    if (t8) {
-      M.cbp[m] = nclut++;
-      mx_frame_texture(0, tbp, w < 128 ? 2 : w / 64, MX_GS_PSM_T8, w, hh, tex + mt->tex);
-    } else {
-      mx_frame_texture(0, tbp, w < 64 ? 1 : w / 64, MX_GS_PSM_CT32, w, hh, tex + mt->tex);
+    /* the levels one after the other, each from 16 bytes */
+    const void *lv[MX_TEX_LEVELS];
+    u32 off = mt->tex;
+    for (u32 n = 0; n < levels; n++) {
+      lv[n] = tex + off;
+      off += ((1u << (mt->tw - n)) * (1u << (mt->th - n)) * (t8 ? 1 : 4) + 15) & ~15u;
     }
+    mx_frame_tex_upload(0, t, lv);
     mx_frame_wait_path3();
-    tbp += pages * 32;
+    if (t8)
+      t->cbp = nclut++;
+    tbp += (b + 31) & ~31u;
   }
-  if (tbp + (4 * nclut + 31) / 32 * 32 > GS_BLOCKS - HUD_BLOCKS) {
+  u32 clut_blocks = (4 * nclut + 31) / 32 * 32;
+  if (tbp + clut_blocks + mx_tex_blocks(64, 64, MX_GS_PSM_CT32) + 32 > GS_BLOCKS - HUD_BLOCKS) {
     mx_printf("model: the textures do not fit the GS memory\n");
     return -1;
   }
   for (u32 m = 0; m < h->nmat; m++)
     if (M.mat[m].psm == MXM_TEX_T8) {
-      M.cbp[m] = tbp + 4 * M.cbp[m];
-      mx_frame_texture(0, M.cbp[m], 1, MX_GS_PSM_CT32, 16, 16, tex + M.mat[m].clut);
+      M.tex[m].cbp = tbp + 4 * M.tex[m].cbp;
+      mx_frame_texture(0, M.tex[m].cbp, 1, MX_GS_PSM_CT32, 16, 16, tex + M.mat[m].clut);
       mx_frame_wait_path3();
     }
-  M.tbp_free = tbp + (4 * nclut + 31) / 32 * 32;
+  tbp += clut_blocks;
+  tbp +=
+      (mx_tex_init(&M.probe, tbp, MX_GS_PSM_CT32, 6, 6, PROBE_LEVELS, MX_TEX_PACKED) + 31) & ~31u;
+  mx_frame_tex_upload(1, &M.probe, probe_levels());
+  mx_frame_wait_path3();
+  M.tbp_free = tbp;
   return 0;
 }
 
@@ -737,17 +781,21 @@ static u32 skin_nv;
 static void gs_state(u32 m, int pass) {
   mx_frame_commit(mx_e_cnt(mx_frame_reserve(1), 0, mx_vif_flush(), 0));
   const struct mxm_mat *mt = &M.mat[m];
-  u32 w = 1u << mt->tw;
-  u64 tex0 = mt->psm == MXM_TEX_T8
-                 ? mx_gs_tex0(M.tbp[m], w < 128 ? 2 : w / 64, MX_GS_PSM_T8, mt->tw, mt->th, 1, 3) |
-                       MX_SET(GS_TEX0_CBP, M.cbp[m]) | MX_SET(GS_TEX0_CLD, 1)
-                 : mx_gs_tex0(M.tbp[m], w < 64 ? 1 : w / 64, MX_GS_PSM_CT32, mt->tw, mt->th, 1, 3);
+  const struct mx_tex *t = mip_mode == MIP_COLOURS ? &M.probe : &M.tex[m];
+  /* K: log2 of the texels a pixel at w = 1 (the pixels a model unit: the
+     scale to radius R and the projection's, across and down) */
+  s32 k =
+      mt->lod + mx_tex_lod_k(1.0f, ss_s * __builtin_sqrtf(FX * FY) * R / M.h->radius, 0) + mip_bias;
+  u64 tex1 = mip_mode == MIP_OFF ? mx_gs_tex1(0, 0, 1, 1, 0, 0, 0)
+             : mip_mode == MIP_COLOURS
+                 ? mx_gs_tex1(0, (M.tex[m].levels < t->levels ? M.tex[m].levels : t->levels) - 1u,
+                              0, 2, 0, 0, (u32)k)
+                 : mx_tex_tex1(t, 1, mip_mode == MIP_TRI ? 5 : 4, 0, k);
   /* TFX HIGHLIGHT2: the texture times the colour, plus the colour's alpha
      (the highlight); the alpha drawn is the texture's */
-  u64 *c = mx_frame_direct(7);
-  c = mx_e_ad_tag(c, 6, 1);
-  c = mx_e_ad(c, MX_GS_REG_TEX0_1, tex0);
-  c = mx_e_ad(c, MX_GS_REG_TEX1_1, mx_gs_tex1(0, 0, 1, 1, 0, 0, 0));
+  u64 *c = mx_frame_direct(9);
+  c = mx_e_ad_tag(c, 8, 1);
+  c = mx_tex_e_regs(c, t, 0, mx_tex_tex0(t, 1, 3), tex1);
   c = mx_e_ad(c, MX_GS_REG_CLAMP_1, mx_gs_clamp(0, 0, 0, 0, 0, 0));
   /* the alpha test: texels over half opaque (solid, and the blended pass
      that writes Z), or the others (the soft edges) */
@@ -2449,6 +2497,15 @@ static void hud_mode(char *p) {
     p = hud_cat(p, "  SS ");
     p = hud_u(p, (u32)(ss_s * ss_s * itof(ss_j) + 0.5f));
   }
+  if (V.shader >= S_TEX && mip_mode != MIP_OFF) {
+    p = hud_cat(p, mip_names[mip_mode]);
+    if (mip_bias) {
+      /* in eighths of a level: +4/8 */
+      *p++ = mip_bias < 0 ? '-' : '+', *p = 0;
+      p = hud_u(p, (u32)(mip_bias < 0 ? -mip_bias : mip_bias) / 2);
+      p = hud_cat(p, "/8");
+    }
+  }
   if (nlod > 1) {
     /* the level of each material (of the first copy) */
     p = hud_cat(p, "  LOD ");
@@ -2736,6 +2793,10 @@ static void interactive(int nshader) {
       view_start();
     if (b & MX_PAD_R3)
       quality_set((quality_at + 1) % (sizeof quality / sizeof *quality));
+    if (b & MX_PAD_L1)
+      mip_mode = (mip_mode + 1) % MIP_N;
+    if (b & MX_PAD_R1)
+      mip_bias = mip_bias >= 16 ? -16 : mip_bias + 8;
     u8 sticks[4];
     mx_pad_sticks(0, sticks);
     float ly = itof((s32)sticks[3] - 128) / 128;
@@ -2835,6 +2896,42 @@ static void record(void) {
     pipeline_restart();
   }
   mx_printf("model: %u frames recorded\n", (u32)MODEL_RECORD);
+}
+#endif
+
+#ifdef MODEL_MIPSHOTS
+/* -DMODEL_MIPSHOTS: still pictures of the start view's angle at 1, 3, 6
+   and 12 times fit_dist, in each MIPMAP mode (mip_mode), mscei, without the
+   HUD: host:mip_d<k>_<mode>.tga. */
+static void mip_shots(void) {
+  static const char *const name[MIP_N] = {"off", "on", "tri", "col"};
+  static const float dk[] = {1.0f, 3.0f, 6.0f, 12.0f};
+  mx_frame_vsync(1);
+  pose_frames = 1;
+  no_hud = 1;
+  V.copies = 1, V.shader = S_SCEI, V.indexed = has_layout(1);
+  for (u32 k = 0; k < sizeof dk / sizeof *dk; k++)
+    for (int m = 0; m < MIP_N; m++) {
+      view_start();
+      V.dist = dk[k] * fit_dist();
+      mip_mode = m;
+      frame(0.5f);
+      frame(0.5f);
+      u32 last = mx_gs.frames - 1, d0 = mx_count();
+      while (mx_gs.frames_done < last + 1 && mx_count() - d0 < 300000000u)
+        ;
+      mx_frame_stop();
+      char path[40] = "host:mip_d";
+      char *e = hud_u(path + 10, k);
+      e = hud_cat(e, "_");
+      e = hud_cat(e, name[m]);
+      hud_cat(e, ".tga");
+      if (mx_gs_save_tga((int)(last & 1), path) < 0)
+        mx_printf("model: %s could not be written\n", path);
+      else
+        mx_printf("model: %s\n", path);
+      pipeline_restart();
+    }
 }
 #endif
 
@@ -2977,6 +3074,19 @@ int main(int argc, char **argv) {
       cutout = 1;
       continue;
     }
+    if (!strcmp_(argv[a], "-mip") && a + 1 < argc) {
+      static const char *const mode[MIP_N] = {"off", "on", "tri", "col"};
+      a++;
+      for (int i = 0; i < MIP_N; i++)
+        if (!strcmp_(argv[a], mode[i]))
+          mip_mode = i;
+      continue;
+    }
+    if (!strcmp_(argv[a], "-mipbias") && a + 1 < argc) {
+      const char *v = argv[++a];
+      mip_bias = v[0] == '-' ? -(s32)atou_(v + 1) : (s32)atou_(v);
+      continue;
+    }
     if (!strcmp_(argv[a], "-aa")) {
       aa1 = 1;
       continue;
@@ -3023,6 +3133,12 @@ int main(int argc, char **argv) {
     mx_printf("model: no pad driver\n");
 #ifdef MODEL_SHOTS
   shots();
+  mx_frame_stop();
+  MX_TEST_END(0);
+  return 0;
+#endif
+#ifdef MODEL_MIPSHOTS
+  mip_shots();
   mx_frame_stop();
   MX_TEST_END(0);
   return 0;

@@ -8,6 +8,7 @@ int main(void) {
   test_emit();
   test_chain();
   test_video();
+  test_tex();
   if (test_failures) {
     printf("host tests: %d FAILED\n", test_failures);
     return 1;

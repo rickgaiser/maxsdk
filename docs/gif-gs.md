@@ -70,6 +70,41 @@ one kick). "side s" = right triangles of s×s/2 pixels in rows; ADC = vertices s
 | `mx_gs_init` writing DISPFB1/DISPLAY1 = 0 (circuit 1 off) and, after SetGsCrt, all display registers = 0 before the real display | **the PS2 hung or dropped ps2link before the first printf** (twice; PCSX2 fine; once a run passed). Fixed by never writing an off circuit's registers and writing PMODE, DISPFB2, DISPLAY2, BGCOLOR before the GS interrupts are on, as the old init did; which of the two mattered is not isolated | NTSC 640×224 | `tests/ps2/gs.c`, batch | 2026-10-27 |
 | After `mx_video_set` (GS reset) PRMODECONT, COLCLAMP, TEST, TEXA must be written again before drawing | | | `tests/ps2/rt.c`, `demos/display` | 2026-10-27 |
 
+## Textures and MIPMAP (`src/gs/tex.c`, `<mx/tex.h>`)
+
+A texture of `levels` levels (`struct mx_tex`): level 0 in TEX0, levels 1-3 in MIPTBP1, 4-6 in
+MIPTBP2, each with its own base and width; TEX1.MXL the last level. `mx_tex_init` places them
+largest first:
+
+- A level wider or higher than a page takes whole pages, from a page.
+- A smaller one takes the blocks of the page's block order (GS manual 8.3) it covers, up to the
+  last; its base is aligned to that count rounded up to a power of two (the GS manual's example,
+  3.4.11: 512 × 512 CT16 levels at 7200, 9248, 9760, 9888, 9920, 9928, 9930, which
+  `mx_tex_init` gives exactly, `tests/host/test_tex.c`).
+- `MX_TEX_PAGES`: every level from a page, so that it can be drawn into (`mx_tex_rt`,
+  `mx_tex_e_mipgen`).
+- Block orders (block row r, column c): CT32/CT24/T8 `0 1 4 5 16 17 20 21 / 2 3 6 7 18 19 22 23 /
+  8 9 12 13 24 25 28 29 / 10 11 14 15 26 27 30 31`; CT16 and T4 `0 2 8 10 / 1 3 9 11 / 4 6 12 14
+  / 5 7 13 15 / 16 18 24 26 / ...`; CT16S `0 2 16 18 / 1 3 17 19 / 8 10 24 26 / 9 11 25 27 / 4 6
+  20 22 / ...`. Blocks are 8 × 8 (CT32), 16 × 8 (CT16), 16 × 16 (T8), 32 × 16 (T4).
+- The smallest level is 8 × 8 by default: bilinear filters are wrong at 4 texels or less (GS
+  manual 3.4.12), and T8/T4 IMAGE transfers are 8 texels wide at least.
+
+The level: LOD = (log2(1/Q) << L) + K (LCM 0, per pixel from the interpolated Q: STQ only) or
+K (LCM 1). With Q = 1/w (the VU programs' `rcp(p.w)`) LOD = log2(w) + K, so K = log2(texels a
+model unit / pixels a model unit at w = 1) puts level 0 where a texel is a pixel
+(`mx_tex_lod_k`; `gltf2mxm.py` writes the texel density of each material, `demos/model` adds
+the projection's). The GS knows the distance, not the slope of the surface: a surface at a
+slant gets the level of one facing the view at that distance (L > 0 makes the level rise
+faster). `mx_tex_e_mipgen` makes levels 1 .. n − 1 with the GS: a bilinear sprite half the size
+of the level above, UV + 1 texel (pixel x samples u = 2x + 1, between texels 2x and 2x + 1).
+
+| Fact | Value | Conditions | Source | Date |
+|---|---|---|---|---|
+| Each level of a packed 64 × 64 texture of 4 levels read with LOD = K = n (LCM 1, nearest, nearest level) | level n's colour, n = 0..3, CT32, CT16, T8 and T4 (with a CLUT): the layout, MIPTBP and the block orders | sprites with UV | `tests/ps2/mip.c` | PCSX2 2026-10-28 (PS2 not yet) |
+| LCM 0, K 0, STQ sprites with Q = 1, 1/4, 1/8 | levels 0, 2, 3 | | `tests/ps2/mip.c` | PCSX2 2026-10-28 (PS2 not yet) |
+| `mx_tex_e_mipgen` on a 16 × 16 CT32 texture of single-texel checks of two colours | every texel of level 1 the mean of the two (±1) | context 2 | `tests/ps2/mip.c` | PCSX2 2026-10-28 (PS2 not yet) |
+
 ## Video modes (`src/gs/video.c`)
 
 DISPLAY units: DX/DW in VCK, DY/DH in raster lines (frame lines when interlaced). A buffer line

@@ -4,6 +4,7 @@
 #include <mx/gs.h>
 #include <mx/irq.h>
 #include <mx/sif.h>
+#include <mx/tex.h>
 #include <mx/trace.h>
 #include <mx/vif.h>
 
@@ -297,6 +298,11 @@ void mx_gs_upload(struct mx_pkt *p, u32 dbp, u32 dbw, u32 psm, u32 x, u32 y, u32
   /* the texture cache must not keep old data */
   mx_pkt_ad_begin(p, 1, 1);
   mx_pkt_ad(p, MX_GS_REG_TEXFLUSH, 0);
+}
+
+void mx_tex_upload(struct mx_pkt *p, const struct mx_tex *t, u32 level, const void *data) {
+  mx_gs_upload(p, t->tbp[level], t->tbw[level], t->psm, 0, 0, 1u << (t->tw - level),
+               1u << (t->th - level), data);
 }
 
 u64 *mx_gs_e_draw_env(u64 *c, int buf, int eop) {

@@ -19,5 +19,6 @@ void test_pkt(void);
 void test_emit(void);
 void test_chain(void);
 void test_video(void);
+void test_tex(void);
 
 #endif

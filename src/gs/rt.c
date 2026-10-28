@@ -1,4 +1,5 @@
 #include <mx/rt.h>
+#include <mx/tex.h>
 
 void mx_rt_init(struct mx_rt *t, u32 fbp, u32 w, u32 h, u32 psm, u32 zbp, u32 zpsm) {
   *t = (struct mx_rt){.fbp = fbp,
@@ -16,21 +17,8 @@ void mx_rt_init(struct mx_rt *t, u32 fbp, u32 w, u32 h, u32 psm, u32 zbp, u32 zp
 }
 
 u32 mx_rt_pages(u32 w, u32 h, u32 psm) {
-  u32 pw = 64, ph = 32; /* 32/24-bit, and T8H/T4HL/T4HH (stored in 32-bit pixels) */
-  switch (psm) {
-  case MX_GS_PSM_CT16:
-  case MX_GS_PSM_CT16S:
-  case MX_GS_PSM_Z16:
-  case MX_GS_PSM_Z16S:
-    ph = 64;
-    break;
-  case MX_GS_PSM_T8:
-    pw = 128, ph = 64;
-    break;
-  case MX_GS_PSM_T4:
-    pw = 128, ph = 128;
-    break;
-  }
+  u32 pw, ph;
+  mx_tex_page_size(psm, &pw, &ph);
   return (w + pw - 1) / pw * ((h + ph - 1) / ph);
 }
 

@@ -1,6 +1,7 @@
 #include <mx/debug.h>
 #include <mx/dma.h>
 #include <mx/frame.h>
+#include <mx/tex.h>
 #include <mx/trace.h>
 
 struct mx_frame_stats mx_frame_stats;
@@ -438,5 +439,23 @@ int mx_frame_texture(int slot, u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, const vo
     return -1;
   mx_pkt_writeback(&p);
   mx_dma_chain(MX_CH_GIF, tex_pk[slot & 1], 0);
+  return 0;
+}
+
+static u32 tex_mip_pk[2][512] MX_ALIGNED(64);
+
+int mx_frame_tex_upload(int slot, const struct mx_tex *t, const void *const *data) {
+  if (mx_dma_wait(MX_CH_GIF) < 0)
+    return -1;
+  struct mx_pkt p;
+  mx_pkt_begin(&p, tex_mip_pk[slot & 1], sizeof tex_mip_pk[0], 0);
+  mx_pkt_cnt(&p, 0, 0);
+  for (u32 n = 0; n < t->levels; n++)
+    mx_tex_upload(&p, t, n, data[n]);
+  mx_pkt_end(&p, 0, 0);
+  if (mx_pkt_finish(&p) < 0)
+    return -1;
+  mx_pkt_writeback(&p);
+  mx_dma_chain(MX_CH_GIF, tex_mip_pk[slot & 1], 0);
   return 0;
 }

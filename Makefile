@@ -171,8 +171,8 @@ $(OUT)/demos/%.elf: %.c $$(DEMO_OBJS_$$*) $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS)
 MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mscei)
 DEMO_OBJS_model := $(OUT)/demos/model/fox_mxm.o
 # model.c: VU0 macro mode; approximate functions for VRSQRT (the skinning's normals)
-$(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf $(OUT)/demos/model_shots.elf: \
-  CFLAGS += -mvu0 -fapprox-func
+$(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf $(OUT)/demos/model_shots.elf \
+  $(OUT)/demos/model_mipshots.elf: CFLAGS += -mvu0 -fapprox-func
 
 $(OUT)/demos/model/fox.mxm: $(HERE)/demos/model/assets/Fox.glb $(HERE)/tools/model/gltf2mxm.py \
                             $(MODEL_IX)
@@ -197,6 +197,14 @@ $(OUT)/demos/model_shots.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(L
                               $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DMODEL_SHOTS -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
+
+# model_mipshots.elf: still pictures of the model in each MIPMAP mode at four
+# distances as host:mip_*.tga (MODEL_MIPSHOTS).
+$(OUT)/demos/model_mipshots.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LIB) $(CRT0) \
+                                 $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DMODEL_MIPSHOTS -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 
 $(OUT)/demos/model/%_mxm.o: $(OUT)/demos/model/%.mxm
@@ -312,7 +320,7 @@ batch: $(OUT)/batch/ps2batch.elf
 # Pure parts of the library are tested on the host too.
 HOST_SRCS := $(wildcard $(HERE)/tests/host/*.c) $(HERE)/src/pkt/pkt.c $(HERE)/src/pkt/chain.c \
              $(HERE)/src/gs/shader.c $(HERE)/src/gs/rt.c $(HERE)/src/gs/display.c \
-             $(HERE)/src/gs/video.c
+             $(HERE)/src/gs/video.c $(HERE)/src/gs/tex.c
 HOST_BIN   = $(OUT)/host/test_host
 
 $(HOST_BIN): $(HOST_SRCS) $(wildcard $(HERE)/tests/host/*.h) $(HDRS)

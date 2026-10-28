@@ -45,7 +45,7 @@
 
 #include <mx/types.h>
 
-#define MXM_MAGIC 0x344D584Du /* "MXM4" */
+#define MXM_MAGIC 0x354D584Du /* "MXM5" */
 #define MXM_SKINNED 1u
 #define MXM_SINGLE 2u /* drawn once, not as copies (gltf2mxm.py --single) */
 
@@ -104,7 +104,11 @@ struct mxm_strip {
 /* The texture: psm MXM_TEX_CT32, (1 << tw) x (1 << th) RGBA (alpha 128 =
    1.0); or MXM_TEX_T8, as many bytes, each the number of an entry of the
    CLUT at clut: 256 RGBA, already in the GS's order of a 16 x 16 CT32 CLUT
-   (CSM1: entries 8 .. 15 and 16 .. 23 of each 32 swapped). */
+   (CSM1: entries 8 .. 15 and 16 .. 23 of each 32 swapped). Then its MIPMAP
+   levels 1 .. levels - 1, each half the one before each way, from a
+   16-byte boundary (T8: entries of the same CLUT); lod: log2 of the texels
+   a model unit of the triangles of the material, in 1/16 (TEX1.K comes
+   from it and the projection). */
 #define MXM_TEX_CT32 0
 #define MXM_TEX_T8 1
 #define MXM_MAT_ALPHA 1 /* flags: texels not fully opaque (cut-outs, soft edges) */
@@ -114,6 +118,8 @@ struct mxm_mat {
   u8 psm, flags;
   u8 color[4];  /* the texture's mean colour; [3]: the highlight's strength (0..255) */
   u32 clut;     /* byte offset in TEX (T8) */
+  u8 levels, pad;
+  s16 lod;
 };
 
 #define MXM_PAL_MAX 30

@@ -51,7 +51,7 @@ import re
 import struct
 import sys
 
-MAGIC = 0x344D584D  # "MXM4"
+MAGIC = 0x354D584D  # "MXM5"
 SKINNED = 1
 SINGLE = 2  # drawn once, not as copies
 
@@ -283,6 +283,49 @@ def triangles_of(gl, prim, n):
     fail("primitive mode %d is not triangles" % mode)
 
 
+def half(src, w, h, cov, alpha_test):
+    """The next MIPMAP level of w x h RGBA texels (lists of 4 ints 0..255): the
+    mean of 2 x 2, colour weighted by alpha (no dark fringes where cut-outs
+    end). cov: the share of texels at or above alpha_test to keep (the
+    alpha test thins cut-outs out from level to level otherwise), or None."""
+    hw, hh = w // 2, h // 2
+    out = []
+    for y in range(hh):
+        for x in range(hw):
+            q = [src[(2 * y + dy) * w + 2 * x + dx] for dy in (0, 1) for dx in (0, 1)]
+            a = sum(c[3] for c in q)
+            if a:
+                rgb = [int(round(sum(c[k] * c[3] for c in q) / a)) for k in range(3)]
+            else:
+                rgb = [int(round(sum(c[k] for c in q) / 4)) for k in range(3)]
+            out.append(rgb + [int(round(a / 4))])
+    if cov is not None and cov > 0:
+        # scale alpha so that as many texels pass as at level 0
+        k = max(1, int(round(cov * len(out))))
+        t = sorted((c[3] for c in out), reverse=True)[k - 1]
+        if t > 0:
+            f = min(4.0, max(0.25, alpha_test / t))
+            for c in out:
+                c[3] = min(255, int(round(c[3] * f)))
+    return out
+
+
+def nearest_entry(pal):
+    """A function from RGBA to the nearest of the 256 entries of pal (RGBA
+    bytes, alpha 0..255), cached by colour."""
+    ent = [pal[4 * i:4 * i + 4] for i in range(256)]
+    cache = {}
+
+    def near(c):
+        key = tuple(c)
+        i = cache.get(key)
+        if i is None:
+            i = cache[key] = min(range(256), key=lambda j: sum((ent[j][k] - c[k]) ** 2
+                                                              for k in range(4)))
+        return i
+    return near
+
+
 def quant_weights(w):
     t = sum(w)
     if t <= 0:
@@ -432,6 +475,9 @@ def main():
     ap.add_argument("--tex-max", type=int, default=256, help="largest texture side")
     ap.add_argument("--tex-format", choices=("ct32", "t8"), default="ct32",
                     help="textures of 32 bits, or of 8 (256 colours of a CLUT)")
+    ap.add_argument("--mips", type=int, default=7,
+                    help="MIPMAP levels of a texture, level 0 included (down to 8 x 8 at most; "
+                         "1: none)")
     ap.add_argument("--layout", choices=("both", "indexed", "strips"), default="both",
                     help="the sections written: the clusters, the strips, or both")
     ap.add_argument("--phys", action="append", default=[], metavar="NAME=K,D[,G[,LIMIT[,R]]]",
@@ -812,11 +858,52 @@ def main():
         return p
 
     t8 = args.tex_format == "t8"
+    alpha_test = 128  # the demo's alpha test: over half opaque (GS 0x40 of 0x80)
+
+    # the areas of each material's triangles: on the model (rest pose) and
+    # in texture coordinates (texel density = sqrt(uv area * w * h / area))
+    geo_area, uv_area = [0.0] * len(mat_ids), [0.0] * len(mat_ids)
+    for a, b, c, (mat, _, _) in tris:
+        pa, pb, pc = verts[a][0], verts[b][0], verts[c][0]
+        u = [pb[k] - pa[k] for k in range(3)]
+        v = [pc[k] - pa[k] for k in range(3)]
+        x = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+        ta, tb, tc = verts[a][2], verts[b][2], verts[c][2]
+        geo_area[mat_of[mat]] += 0.5 * math.sqrt(sum(e * e for e in x))
+        uv_area[mat_of[mat]] += 0.5 * abs((tb[0] - ta[0]) * (tc[1] - ta[1]) -
+                                          (tb[1] - ta[1]) * (tc[0] - ta[0])) / 4096.0 ** 2
+
+    # the GS block order in a page (8 x 4 blocks: CT32 8 x 8 texels, T8 16 x 16)
+    order32 = [[0, 1, 4, 5, 16, 17, 20, 21], [2, 3, 6, 7, 18, 19, 22, 23],
+               [8, 9, 12, 13, 24, 25, 28, 29], [10, 11, 14, 15, 26, 27, 30, 31]]
+    pw, ph = (128, 64) if t8 else (64, 32)
+
+    def blocks(w, h):
+        # blocks a w x h level touches from its base (mx_tex_blocks)
+        if w > pw or h > ph:
+            return -(-w // pw) * -(-h // ph) * 32
+        bw = pw // 8
+        return 1 + max(order32[r][c] for r in range(-(-h // bw)) for c in range(-(-w // bw)))
+
+    def nlevels(w, h):
+        # mx_tex_max_levels(tw, th, 8), at most --mips
+        n = 1
+        while n < min(args.mips, 7) and min(w, h) >> n >= 8:
+            n += 1
+        return n
 
     def pages(w, h):
-        # GS pages (8 KB) of a texture: T8 pages are 128 x 64, CT32 64 x 32
-        return (-(-max(w, 128) // 128) * -(-h // 64) if t8 else
-                -(-max(w, 64) // 64) * -(-h // 32))
+        # GS pages (8 KB) of a texture with its levels, as mx_tex_init packs them
+        at = 0
+        for n in range(nlevels(w, h)):
+            b = blocks(max(w >> n, 1), max(h >> n, 1))
+            if b >= 32:
+                b = -(-b // 32) * 32
+            a = 1
+            while a < b and a < 32:
+                a *= 2
+            at = -(-at // a) * a + b
+        return -(-at // 32)
     sizes = [[min(pow2(im.width), args.tex_max), min(pow2(im.height), args.tex_max)]
              for im, _ in imgs]
     while sum(pages(w, h) for w, h in sizes) * 8192 > args.tex_budget:
@@ -849,6 +936,12 @@ def main():
                     tot[k] += c[k]
                 rgba.append(c)
         mean = [int(t / (w * h)) for t in tot]
+        # cut-outs keep the share of texels that pass the alpha test
+        cov = (sum(1 for c in rgba if c[3] >= alpha_test) / len(rgba)
+               if any(c[3] < 255 for c in rgba) else None)
+        levels = [rgba]
+        for n in range(1, nlevels(w, h)):
+            levels.append(half(levels[-1], w >> (n - 1), h >> (n - 1), cov, alpha_test))
         if t8:
             src = Image.new("RGBA", (w, h))
             src.putdata([tuple(c) for c in rgba])
@@ -866,18 +959,33 @@ def main():
             S["TEX"] += clut
             off = len(S["TEX"])
             S["TEX"] += q.tobytes()
+            # the levels below in the same CLUT: the nearest entry
+            near = nearest_entry(pal)
+            for lv in levels[1:]:
+                S["TEX"] += bytes((-len(S["TEX"])) % 16)
+                S["TEX"] += bytes(near(c) for c in lv)
         else:
+            S["TEX"] += bytes((-len(S["TEX"])) % 16)
             off, clut_off = len(S["TEX"]), 0
-            S["TEX"] += bytes(v for c in rgba for v in c[:3] + [(c[3] * 128 + 127) // 255])
+            for lv in levels:
+                S["TEX"] += bytes((-len(S["TEX"])) % 16)
+                S["TEX"] += bytes(v for c in lv for v in c[:3] + [(c[3] * 128 + 127) // 255])
         # texels less than fully opaque (GS alpha 128): drawn blended, after the rest
         if t8:
             used = set(q.tobytes())
             alpha = any(pal[4 * i + 3] < 255 for i in used)
         else:
             alpha = any(c[3] < 255 for c in rgba)
-        mat_recs.append(struct.pack("<IBBBBBBBBI", off, int(math.log2(w)), int(math.log2(h)),
+        # the texel density on the model (texels a model unit): K of the LOD
+        dens = math.sqrt(uv_area[mi] * w * h / geo_area[mi]) if geo_area[mi] > 0 and \
+            uv_area[mi] > 0 else 1.0
+        mat_recs.append(struct.pack("<IBBBBBBBBIBBh", off, int(math.log2(w)), int(math.log2(h)),
                                     1 if t8 else 0, 1 if alpha else 0, mean[0], mean[1], mean[2],
-                                    spec, clut_off))
+                                    spec, clut_off, len(levels), 0,
+                                    int(round(16 * math.log2(dens)))))
+        if args.verbose:
+            print("material %d: %d x %d, %d levels, %.1f texels a unit" %
+                  (mi, w, h, len(levels), dens))
     S["MAT"] = bytearray(b"".join(mat_recs))
 
     # ---- palettes and animations
