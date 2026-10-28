@@ -28,7 +28,8 @@ vertices, where a V3-16 stream is quadword aligned. Its animations
 are baked: the joint matrices (joint node's world matrix times its inverse
 bind matrix) at --fps frames a second. Each material has one texture (32
 bits, or --tex-format t8: 256 colours of a CLUT), made to fit the GS memory
-(--tex-budget), and its mean colour. Needs Python 3 and
+(--tex-budget, the levels included: the texture of the most texels a model
+unit halved first), and its mean colour. Needs Python 3 and
 Pillow (PIL) for the images; nothing else.
 
 A model of outfits (fbx2glb.py with more than one input: the scene's extras
@@ -906,10 +907,21 @@ def main():
         return -(-at // 32)
     sizes = [[min(pow2(im.width), args.tex_max), min(pow2(im.height), args.tex_max)]
              for im, _ in imgs]
+
+    def dens2(i):
+        # the texel density squared at sizes[i] (no area on the model: unseen, the densest)
+        if geo_area[i] <= 0:
+            return math.inf
+        return uv_area[i] * sizes[i][0] * sizes[i][1] / geo_area[i]
+
+    # over the budget: halve the texture of the most texels a model unit (the
+    # least detail lost on the screen; the larger one of the same density),
+    # until all have about the same density
     while sum(pages(w, h) for w, h in sizes) * 8192 > args.tex_budget:
-        k = max(range(len(sizes)), key=lambda i: sizes[i][0] * sizes[i][1])
-        if sizes[k][0] <= 8 and sizes[k][1] <= 8:
+        can = [i for i in range(len(sizes)) if sizes[i][0] > 8 or sizes[i][1] > 8]
+        if not can:
             break
+        k = max(can, key=lambda i: (dens2(i), sizes[i][0] * sizes[i][1]))
         if sizes[k][0] >= sizes[k][1]:
             sizes[k][0] //= 2
         else:

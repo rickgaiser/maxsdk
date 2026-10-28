@@ -279,6 +279,54 @@ static const void *const *probe_levels(void) {
   return lv;
 }
 
+/* Material m's texture (its levels) into the GS. */
+static void tex_upload(u32 m) {
+  const struct mxm_mat *mt = &M.mat[m];
+  const u8 *tex = sec(MXM_TEX);
+  u32 t8 = mt->psm == MXM_TEX_T8, levels = mt->levels ? mt->levels : 1;
+  /* the levels one after the other, each from 16 bytes */
+  const void *lv[MX_TEX_LEVELS];
+  u32 off = mt->tex;
+  for (u32 n = 0; n < levels; n++) {
+    lv[n] = tex + off;
+    off += ((1u << (mt->tw - n)) * (1u << (mt->th - n)) * (t8 ? 1 : 4) + 15) & ~15u;
+  }
+  mx_frame_tex_upload(0, &M.tex[m], lv);
+  mx_frame_wait_path3();
+}
+
+/* Where the level colours are: in the place of material probe_host's
+   texture (the largest; uploaded while MIP_COLOURS is on, the texture again
+   after it), else after the HUD (-2), else nowhere (-1: no MIP_COLOURS).
+   The model's textures have all of the GS memory after the framebuffers
+   but the CLUTs' and the HUD's. */
+static int probe_host = -1;
+static void probe_upload(void) {
+  mx_frame_tex_upload(1, &M.probe, probe_levels());
+  mx_frame_wait_path3();
+}
+static void probe_place(void) {
+  u32 pb = mx_tex_init(&M.probe, 0, MX_GS_PSM_CT32, 6, 6, PROBE_LEVELS, MX_TEX_PACKED), hb = 0;
+  probe_host = -1;
+  for (u32 m = 0; m < M.h->nmat; m++)
+    if (M.tex[m].blocks > hb)
+      hb = M.tex[m].blocks, probe_host = (int)m;
+  if (hb >= pb) {
+    mx_tex_init(&M.probe, M.tex[probe_host].tbp[0], MX_GS_PSM_CT32, 6, 6, PROBE_LEVELS,
+                MX_TEX_PACKED);
+  } else if (M.tbp_free + HUD_BLOCKS + ((pb + 31) & ~31u) <= GS_BLOCKS) {
+    mx_tex_init(&M.probe, M.tbp_free + HUD_BLOCKS, MX_GS_PSM_CT32, 6, 6, PROBE_LEVELS,
+                MX_TEX_PACKED);
+    probe_host = -2;
+  } else {
+    probe_host = -1;
+  }
+  if (probe_host == -1 && mip_mode == MIP_COLOURS)
+    mip_mode = MIP_ON;
+  if (probe_host == -2 || (probe_host >= 0 && mip_mode == MIP_COLOURS))
+    probe_upload();
+}
+
 static int model_open(const u8 *base, u32 size, const struct mx_shader *const *ix, u32 nix) {
   const struct mxm_header *h = (const void *)base;
   M.h = h, M.base = base;
@@ -436,10 +484,10 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
       ibatch[o][c] = (struct mx_ibatch){M.cl[c].first, M.cl[c].nv, M.cl[c].ni,
                                         idx_buf[o] + M.cl[c].idx};
   /* the textures after the framebuffers, each with its MIPMAP levels from
-     a page (mx_tex_init); then the CLUTs, 4 blocks each; then the level
-     colours (MIP_COLOURS) */
+     a page (mx_tex_init); then the CLUTs, 4 blocks each; then the HUD's
+     (M.tbp_free); the level colours (MIP_COLOURS) in the largest texture's
+     place (probe_place) */
   u32 tbp = mx_gs.tbp, nclut = 0;
-  const u8 *tex = sec(MXM_TEX);
   for (u32 m = 0; m < h->nmat; m++) {
     const struct mxm_mat *mt = &M.mat[m];
     struct mx_tex *t = &M.tex[m];
@@ -450,24 +498,17 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
       mx_printf("model: the textures do not fit the GS memory\n");
       return -1;
     }
-    /* the levels one after the other, each from 16 bytes */
-    const void *lv[MX_TEX_LEVELS];
-    u32 off = mt->tex;
-    for (u32 n = 0; n < levels; n++) {
-      lv[n] = tex + off;
-      off += ((1u << (mt->tw - n)) * (1u << (mt->th - n)) * (t8 ? 1 : 4) + 15) & ~15u;
-    }
-    mx_frame_tex_upload(0, t, lv);
-    mx_frame_wait_path3();
+    tex_upload(m);
     if (t8)
       t->cbp = nclut++;
     tbp += (b + 31) & ~31u;
   }
   u32 clut_blocks = (4 * nclut + 31) / 32 * 32;
-  if (tbp + clut_blocks + mx_tex_blocks(64, 64, MX_GS_PSM_CT32) + 32 > GS_BLOCKS - HUD_BLOCKS) {
+  if (tbp + clut_blocks > GS_BLOCKS - HUD_BLOCKS) {
     mx_printf("model: the textures do not fit the GS memory\n");
     return -1;
   }
+  const u8 *tex = sec(MXM_TEX);
   for (u32 m = 0; m < h->nmat; m++)
     if (M.mat[m].psm == MXM_TEX_T8) {
       M.tex[m].cbp = tbp + 4 * M.tex[m].cbp;
@@ -475,11 +516,8 @@ static int model_open(const u8 *base, u32 size, const struct mx_shader *const *i
       mx_frame_wait_path3();
     }
   tbp += clut_blocks;
-  tbp +=
-      (mx_tex_init(&M.probe, tbp, MX_GS_PSM_CT32, 6, 6, PROBE_LEVELS, MX_TEX_PACKED) + 31) & ~31u;
-  mx_frame_tex_upload(1, &M.probe, probe_levels());
-  mx_frame_wait_path3();
   M.tbp_free = tbp;
+  probe_place();
   return 0;
 }
 
@@ -2475,6 +2513,28 @@ static void pipeline_restart(void) {
   bound = 0;
 }
 
+/* MIPMAP mode m (MIP_COLOURS skipped without the room for its levels);
+   the level colours in or out of their host's place (probe_place) between
+   frames: the frames drawn first, the pipeline restarted after. */
+static void mip_set(int m) {
+  if (m == MIP_COLOURS && probe_host == -1)
+    m = (m + 1) % MIP_N;
+  int swap = probe_host >= 0 && (m == MIP_COLOURS) != (mip_mode == MIP_COLOURS);
+  mip_mode = m;
+  if (!swap)
+    return;
+  u32 last = mx_gs.frames - 1, d0 = mx_count();
+  while (mx_gs.frames_done < last + 1 && mx_count() - d0 < 300000000u)
+    ;
+  mx_frame_stop();
+  if (m == MIP_COLOURS)
+    probe_upload();
+  else
+    tex_upload((u32)probe_host);
+  pipeline_restart();
+  mx_frame_vsync(V.vsync);
+}
+
 /* The HUD's lines: the mode (hud_mode), the counts of the frame (hud_counts)
    and the speed (the interactive mode, the bench); drawn by hud_draw with
    the model, its outfit and animation. */
@@ -2794,7 +2854,7 @@ static void interactive(int nshader) {
     if (b & MX_PAD_R3)
       quality_set((quality_at + 1) % (sizeof quality / sizeof *quality));
     if (b & MX_PAD_L1)
-      mip_mode = (mip_mode + 1) % MIP_N;
+      mip_set((mip_mode + 1) % MIP_N);
     if (b & MX_PAD_R1)
       mip_bias = mip_bias >= 16 ? -16 : mip_bias + 8;
     u8 sticks[4];
@@ -2900,21 +2960,25 @@ static void record(void) {
 #endif
 
 #ifdef MODEL_MIPSHOTS
-/* -DMODEL_MIPSHOTS: still pictures of the start view's angle at 1, 3, 6
-   and 12 times fit_dist, in each MIPMAP mode (mip_mode), mscei, without the
-   HUD: host:mip_d<k>_<mode>.tga. */
+/* -DMODEL_MIPSHOTS: still pictures of the start view's angle at 0.5, 1, 3,
+   6 and 12 times fit_dist, in each MIPMAP mode (mip_mode), without and with
+   supersampling (16 samples), mscei, without the HUD:
+   host:mip_d<k>_<mode>[_ss16].tga. */
 static void mip_shots(void) {
   static const char *const name[MIP_N] = {"off", "on", "tri", "col"};
-  static const float dk[] = {1.0f, 3.0f, 6.0f, 12.0f};
+  static const float dk[] = {0.5f, 1.0f, 3.0f, 6.0f, 12.0f};
   mx_frame_vsync(1);
   pose_frames = 1;
   no_hud = 1;
   V.copies = 1, V.shader = S_SCEI, V.indexed = has_layout(1);
   for (u32 k = 0; k < sizeof dk / sizeof *dk; k++)
-    for (int m = 0; m < MIP_N; m++) {
+    for (u32 ms = 0; ms < 2 * MIP_N; ms++) {
+      int m = (int)(ms % MIP_N), ss = ms >= MIP_N;
       view_start();
       V.dist = dk[k] * fit_dist();
-      mip_mode = m;
+      mip_set(m);
+      mx_frame_vsync(1);
+      ss_set(ss ? 16 : 0);
       frame(0.5f);
       frame(0.5f);
       u32 last = mx_gs.frames - 1, d0 = mx_count();
@@ -2925,7 +2989,7 @@ static void mip_shots(void) {
       char *e = hud_u(path + 10, k);
       e = hud_cat(e, "_");
       e = hud_cat(e, name[m]);
-      hud_cat(e, ".tga");
+      hud_cat(e, ss ? "_ss16.tga" : ".tga");
       if (mx_gs_save_tga((int)(last & 1), path) < 0)
         mx_printf("model: %s could not be written\n", path);
       else
