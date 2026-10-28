@@ -44,7 +44,7 @@ struct mx_gs {
   volatile u32 finish_at; /* mx_count() at the last FINISH */
   volatile u32 slack;     /* EE cycles from the FINISH of the frame shown last to its vblank:
                              how early it was ready (vsync on) */
-  volatile int smooth;    /* the display filter (mx_gs_smooth) */
+  volatile int smooth;    /* the display filter (mx_gs_smooth: MX_SMOOTH_*) */
   struct mx_rt rt[2];     /* mx_gs_init's framebuffers (and Z buffer) */
   const struct mx_display *disp; /* frame k is shown with disp[k % ndisp] */
   u32 ndisp;
@@ -91,12 +91,19 @@ void mx_vram_reset(void);
    mx_gs_init* set two displays of mx_gs.rt; d = 0: those again. */
 void mx_gs_displays(const struct mx_display *d, u32 n);
 
-/* The display filter, on or off: both read circuits show the frame, the
-   first half a pixel to the right, blended 1:1 by the PCRTC. It smooths the
-   edges across at no drawing cost, every line its own (the picture is a
-   little softer across). Only the display: not GS memory (screenshots).
-   Changes the displays of mx_gs_init (not those of mx_gs_displays). */
-void mx_gs_smooth(int on);
+/* The display filter: both read circuits show the frame, circuit 1 moved,
+   blended 1:1 by the PCRTC, at no drawing cost. Only the display: not GS
+   memory (screenshots). Changes the displays of mx_gs_init (not those of
+   mx_gs_displays).
+     MX_SMOOTH_OFF     circuit 2 alone
+     MX_SMOOTH_ACROSS  half a pixel to the right: the edges smoothed across,
+                       every line its own (a little softer across)
+     MX_SMOOTH_DOWN    a buffer line down: each line shown the mean of two
+                       (interlaced FIELD mode: each field's line the mean of
+                       two drawn lines, the flicker filter). The last line
+                       reads one past the buffer. */
+enum { MX_SMOOTH_OFF, MX_SMOOTH_ACROSS, MX_SMOOTH_DOWN };
+void mx_gs_smooth(int mode);
 
 /* Append A+D writes that set up drawing into framebuffer buf (0/1): FRAME,
    ZBUF, XYOFFSET, SCISSOR, TEST, PRMODECONT, COLCLAMP, DTHE. 9 quadwords. */

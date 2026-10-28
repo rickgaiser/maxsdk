@@ -41,6 +41,13 @@ static void same_as_before(struct mx_video_mode m, u32 h, u32 dx, u32 dy) {
                                  MX_SET(GS_PMODE_ALP, 0x80));
   CHECK_EQ(r[MX_DISP_DISPLAY1], old_display(dx + 2, dy, h));
   CHECK_EQ(r[MX_DISP_DISPFB1], r[MX_DISP_DISPFB2]);
+
+  /* MX_SMOOTH_DOWN: circuit 1 the same, reading from the buffer's line 1 */
+  d.c[0] = d.c[1];
+  d.c[0].dby = 1;
+  mx_display_regs(&m, &d, r);
+  CHECK_EQ(r[MX_DISP_DISPLAY1], r[MX_DISP_DISPLAY2]);
+  CHECK_EQ(r[MX_DISP_DISPFB1], r[MX_DISP_DISPFB2] | MX_SET(GS_DISPFB1_DBY, 1));
 }
 
 /* circuit 2 shows a w x h CT32 buffer in mode m */

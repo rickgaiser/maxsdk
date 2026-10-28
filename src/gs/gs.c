@@ -54,15 +54,19 @@ void mx_gs_displays(const struct mx_display *d, u32 n) {
   mx_irq_restore(was);
 }
 
-void mx_gs_smooth(int on) {
-  mx_gs.smooth = on;
+void mx_gs_smooth(int mode) {
+  int on = mode != MX_SMOOTH_OFF;
+  mx_gs.smooth = mode;
   for (int i = 0; i < 2; i++) {
     struct mx_display *d = &def[i];
-    /* circuit 1 the same, half a pixel to the right, blended 1:1 (ALP
-       0x80) over circuit 2; or circuit 2 only */
+    /* circuit 1 the same, half a pixel to the right or a line down, blended
+       1:1 (ALP 0x80) over circuit 2; or circuit 2 only */
     d->c[0] = d->c[1];
     d->c[0].on = (u8)on;
-    d->c[0].dx += (s32)mx_circuit_magh(&mx_video, &d->c[1]) / 2;
+    if (mode == MX_SMOOTH_ACROSS)
+      d->c[0].dx += (s32)mx_circuit_magh(&mx_video, &d->c[1]) / 2;
+    if (mode == MX_SMOOTH_DOWN)
+      d->c[0].dby++;
     d->amod = (u8)!on;
     d->alp = on ? 0x80 : 0;
   }

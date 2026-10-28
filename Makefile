@@ -171,7 +171,8 @@ $(OUT)/demos/%.elf: %.c $$(DEMO_OBJS_$$*) $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS)
 MODEL_IX   := $(patsubst %,$(OUT)/hlsl/%_ix.h,mflat mlit mtex mscei)
 DEMO_OBJS_model := $(OUT)/demos/model/fox_mxm.o
 # model.c: VU0 macro mode; approximate functions for VRSQRT (the skinning's normals)
-$(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf: CFLAGS += -mvu0 -fapprox-func
+$(OUT)/demos/model.elf $(OUT)/demos/model_rec%.elf $(OUT)/demos/model_shots.elf: \
+  CFLAGS += -mvu0 -fapprox-func
 
 $(OUT)/demos/model/fox.mxm: $(HERE)/demos/model/assets/Fox.glb $(HERE)/tools/model/gltf2mxm.py \
                             $(MODEL_IX)
@@ -189,6 +190,14 @@ $(OUT)/demos/model_rec%.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LI
 	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 
 model-record: $(OUT)/demos/model_rec1.elf $(OUT)/demos/model_rec8.elf
+
+# model_shots.elf: still pictures of the model with each AA1 and supersampling
+# mode as host:shot_*.tga (MODEL_SHOTS).
+$(OUT)/demos/model_shots.elf: $(HERE)/demos/model/model.c $(DEMO_OBJS_model) $(LIB) $(CRT0) \
+                              $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $(HDRS) $(HERE)/ld/maxsdk.ld
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DMODEL_SHOTS -I$(dir $<) -I$(HERE)/demos/common -c $< -o $(@:.elf=.o)
+	$(call link,$@,$(CRT0) $(@:.elf=.o) $(DEMO_OBJS_model) $(VU_OBJS) $(HLSL_OBJS) $(LIB))
 
 $(OUT)/demos/model/%_mxm.o: $(OUT)/demos/model/%.mxm
 	printf '%s\n' '.section .rodata.model, "a"' '.balign 64' '.globl model_$*' 'model_$*:' \

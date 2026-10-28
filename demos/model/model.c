@@ -34,9 +34,10 @@
    <k>: k, else the first); SELECT goes to its next, after the last to the
    next model. -i (before or between
    them): the interactive mode at once; -aa: AA1 (the GS draws the edges of
-   the triangles with their coverage); -soft: the display filter
-   (mx_gs_smooth: half a pixel across, blended); -ss: supersampling
-   (ss_fit). R3: off, AA1, the filter, both, supersampling. -cutout: the
+   the triangles with their coverage); -soft, -deflicker: the display filter
+   (mx_gs_smooth: half a pixel across, or a line down, blended); -ss [n]:
+   supersampling, n samples a pixel (4, 8, 16, 32; ss_fit). R3: the next of
+   quality[] (AA1, the filters, supersampling). -cutout: the
    materials with alpha only cut out (alpha test), not blended. -nophys: no
    springs (MXM_PHYS: joints such as hair and cloth pulled towards the
    animation by springs, live, in world space). -mfifo: the frame stream
@@ -62,7 +63,7 @@
      TRIANGLE            copies 1, 2x2 .. 16x16 (a single model: springs on/off)
      CIRCLE              next animation
      L2                  turning on/off            R2                 vsync on/off (off)
-     SELECT              next outfit / model       R3                 AA1 / filter / both / SS / off
+     SELECT              next outfit / model       R3                 AA1 / filters / SS 4, 16
      SELECT + START      end
 
    The view is never nearer than the whole model fits the guard band (the
@@ -72,7 +73,9 @@
    -DMODEL_RECORD=<frames>: instead, that many frames of the model walking
    (or turning), MODEL_RECORD_COPIES x MODEL_RECORD_COPIES copies (1), 30 a
    second whatever the speed, each saved as host:rec_<n>.tga
-   (tools/model/frames2video.py makes a video of them). */
+   (tools/model/frames2video.py makes a video of them). -DMODEL_SHOTS:
+   instead, still pictures and frame times of AA1 and supersampling
+   (shots). */
 
 #include <mx/mx.h>
 #include <mx/pad.h>
@@ -523,19 +526,21 @@ static int animated(int shader) {
 }
 
 static float cam_c[3], cam_r[3], cam_u[3], cam_f[3];
-/* Supersampling (R3, -ss): the scene's box on the screen (ss_fit) is drawn
-   ss_s times as large (up to 2) into a 512 x 512 target, which a bilinear
-   sprite then draws into the one shown buffer at the vblank
-   (mx_frame_present): at 2 each pixel the mean of 2 x 2. The GS memory of
-   mx_gs_init: the shown buffer is framebuffer 0, the target and its Z
-   buffer where framebuffer 1 and the Z buffer were (the textures stay).
-   ss_k: the GS's x and y of the view's centre (2048 without). */
-static int ss;
+/* Supersampling (R3, -ss <n>): the scene's box on the screen (ss_fit) is
+   drawn ss_s times as large (2, less only near the guard band) into a
+   512 x 256 target, a tile of the box at a time; a bilinear sprite draws
+   each tile into the frame's buffer: at 2 each pixel the mean of 2 x 2.
+   Each tile is drawn ss_j times, moved by less than a target pixel each
+   time (ss_jitter), the sprites blended as a running mean: 4 ss_j samples a
+   pixel. The target and its Z buffer are where mx_gs_init's Z buffer was.
+   ss_k: the GS's x and y of the tile's centre (2048 without). */
+#define SS_W 512
+#define SS_H 256
+static int ss_j; /* passes a tile, 0: off */
 static float ss_s = 1, ss_k[2] = {2048, 2048};
-static u32 ss_box[4]; /* x0, y0, x1, y1: screen pixels */
-static float ss_c[2]; /* its centre */
-static struct mx_rt ss_rt, ss_front;
-static struct mx_display ss_disp[2];
+static u32 ss_box[4];   /* x0, y0, x1, y1: screen pixels */
+static u32 ss_tiles[2]; /* across, down */
+static struct mx_rt ss_rt;
 /* AA1: the GS draws the edges of the triangles with their coverage as the
    alpha of (Cs - Cd) As + Cd */
 static int aa1;
@@ -588,20 +593,19 @@ static void camera(void) {
 }
 
 /* The screen's box of the scene's sphere (a little larger: the poses), the
-   scale it is drawn at into ss_rt and ss_k. The target's pixel at the
-   screen's (x, y) is 256 + ss_s (x - ss_c[0]) + (ss_s - 1) / 2 across: the
-   ss_s x ss_s pixels of a screen pixel around its centre. */
+   scale it is drawn at and its tiles. A tile and a pixel or more around it
+   fit the target, and every vertex of the sphere is in the guard band
+   whichever tile of the box is drawn. */
 static void ss_fit(void) {
-  if (!ss) {
-    ss_s = 1, ss_k[0] = ss_k[1] = 2048;
+  ss_s = 1, ss_k[0] = ss_k[1] = 2048;
+  if (!ss_j)
     return;
-  }
   /* the centre (the world's origin) in view space */
   float r = grid_radius() * 1.08f;
   float xr = -(cam_c[0] * cam_r[0] + cam_c[1] * cam_r[1] + cam_c[2] * cam_r[2]);
   float yu = -(cam_c[0] * cam_u[0] + cam_c[1] * cam_u[1] + cam_c[2] * cam_u[2]);
   float zf = -(cam_c[0] * cam_f[0] + cam_c[1] * cam_f[1] + cam_c[2] * cam_f[2]);
-  float lo[2] = {0, 0}, hi[2] = {SW, SH};
+  float lo[2] = {-GUARD, -GUARD}, hi[2] = {SW + GUARD, SH + GUARD};
   if (zf > r * 1.01f) {
     /* the planes through the eye that touch the sphere */
     float q = zf * zf - r * r, c[2] = {xr, yu};
@@ -614,73 +618,51 @@ static void ss_fit(void) {
         lo[1] = SH / 2 - FY * t1, hi[1] = SH / 2 - FY * t0;
     }
   }
-  float s = 2, far = 1;
+  float far = 1;
   for (int a = 0; a < 2; a++) {
     float n = a ? SH : SW;
     s32 b0 = (s32)clampf(lo[a], 0, n - 1), b1 = (s32)clampf(hi[a] + 1, (float)b0 + 1, n);
     ss_box[a] = (u32)b0, ss_box[a + 2] = (u32)b1;
-    ss_c[a] = (float)(b0 + b1) * 0.5f;
-    float w = (float)(b1 - b0), fl = ss_c[a] - lo[a], fh = hi[a] - ss_c[a];
-    s = s * w > 510 ? 510 / w : s;
+    float fl = (float)b1 - lo[a], fh = hi[a] - (float)b0;
     far = fl > far ? fl : far, far = fh > far ? fh : far;
   }
-  /* all of the sphere in the guard band */
-  ss_s = s * far > GUARD ? GUARD / far : s;
-  float dl = (ss_s - 1) * 0.5f;
-  ss_k[0] = 2048 + dl + ss_s * (SW / 2 - ss_c[0]);
-  ss_k[1] = 2048 + dl + ss_s * (SH / 2 - ss_c[1]);
-}
-
-/* The target, its sprite at the box and the screen around it in the
-   background's colour (top, sides, bottom: the order the screen is shown
-   in), into the shown buffer. After mx_frame_present. */
-static void ss_present(u32 r, u32 g, u32 b) {
-  const struct mx_rt *f = &ss_front;
-  u32 x0 = ss_box[0], y0 = ss_box[1], x1 = ss_box[2], y1 = ss_box[3];
-  /* the texel at u covers u - 0.5 .. u + 0.5 (16ths) */
-  float h = ss_s * 0.5f;
-  u32 u0 = (u32)((256 + ss_s * (itof((s32)x0) - ss_c[0]) + h) * 16 + 0.5f);
-  u32 v0 = (u32)((256 + ss_s * (itof((s32)y0) - ss_c[1]) + h) * 16 + 0.5f);
-  u32 u1 = (u32)((256 + ss_s * (itof((s32)x1) - ss_c[0]) + h) * 16 + 0.5f);
-  u32 v1 = (u32)((256 + ss_s * (itof((s32)y1) - ss_c[1]) + h) * 16 + 0.5f);
-  u64 *c = mx_frame_direct(5 + 22);
-  c = mx_rt_e_env(c, f, 0, 0);
-  c = mx_e_ad_tag(c, 21, 1);
-  c = mx_e_ad(c, MX_GS_REG_TEXFLUSH, 0);
-  c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1));
-  c = mx_e_ad(c, MX_GS_REG_TEX0_1, mx_rt_tex0(&ss_rt, 0, 1));
-  c = mx_e_ad(c, MX_GS_REG_TEX1_1, mx_gs_tex1(0, 0, 1, 1, 0, 0, 0));
-  c = mx_e_ad(c, MX_GS_REG_CLAMP_1, mx_gs_clamp(1, 1, 0, 0, 0, 0));
-  c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0));
-  c = mx_e_ad(c, MX_GS_REG_RGBAQ, mx_gs_rgbaq(r, g, b, 0x80, 1.0f));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, 0), mx_rt_py(f, 0), 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, SW), mx_rt_py(f, y0), 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, 0), mx_rt_py(f, y0), 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, x0), mx_rt_py(f, y1), 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, x1), mx_rt_py(f, y0), 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, SW), mx_rt_py(f, y1), 0));
-  c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 1, 0, 0, 0, 1, 0, 0));
-  c = mx_e_ad(c, MX_GS_REG_UV, mx_gs_uv(u0, v0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, x0), mx_rt_py(f, y0), 0));
-  c = mx_e_ad(c, MX_GS_REG_UV, mx_gs_uv(u1, v1));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, x1), mx_rt_py(f, y1), 0));
-  c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 0, 0, 0, 0, 0, 0, 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, 0), mx_rt_py(f, y1), 0));
-  c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(f, SW), mx_rt_py(f, SH), 0));
-  mx_frame_commit(c);
-}
-
-static void ss_set(int on) {
-  ss = on;
-  if (on) {
-    mx_rt_init(&ss_front, mx_gs.fbp[0], SW, SH, MX_GS_PSM_CT32, 0, MX_RT_NOZ);
-    mx_rt_init(&ss_rt, mx_gs.fbp[1], 512, 512, MX_GS_PSM_CT32, mx_gs.fbp[1] + 128, MX_GS_PSM_Z24);
-    mx_display_init(&ss_disp[0], &mx_gs.rt[0]);
-    ss_disp[1] = ss_disp[0];
-    mx_gs_displays(ss_disp, 2);
-  } else {
-    mx_gs_displays(0, 0);
+  ss_s = 2 * far > GUARD ? GUARD / far : 2;
+  for (int a = 0; a < 2; a++) {
+    float room = itof((a ? SS_H : SS_W) - 4) / ss_s;
+    ss_tiles[a] = (u32)(itof((s32)(ss_box[a + 2] - ss_box[a])) / room) + 1;
   }
+}
+
+/* Tile (tx, ty)'s screen box, and ss_k for it. The target's pixel at the
+   screen's (x, y) is SS_W / 2 + ss_s (x - c) + (ss_s - 1) / 2 across, c the
+   tile's centre: the ss_s x ss_s pixels of a screen pixel around its
+   centre. */
+static void ss_tile(u32 tx, u32 ty, u32 *box, float *c) {
+  for (int a = 0; a < 2; a++) {
+    u32 b0 = ss_box[a], w = ss_box[a + 2] - b0, n = ss_tiles[a], i = a ? ty : tx;
+    box[a] = b0 + w * i / n, box[a + 2] = b0 + w * (i + 1) / n;
+    c[a] = itof((s32)(box[a] + box[a + 2])) * 0.5f;
+  }
+  float dl = (ss_s - 1) * 0.5f;
+  ss_k[0] = 2048 + dl + ss_s * (SW / 2 - c[0]);
+  ss_k[1] = 2048 + dl + ss_s * (SH / 2 - c[1]);
+}
+
+/* Where pass p of n samples within a target pixel (16ths, x and y): n
+   rooks, no two in a row or a column (4: the rotated grid). */
+static void ss_jitter(u32 p, u32 n, s32 *dx, s32 *dy) {
+  static const u8 row4[4] = {1, 3, 0, 2}, row8[8] = {0, 5, 2, 7, 4, 1, 6, 3};
+  u32 q = n == 4 ? row4[p] : n == 8 ? row8[p] : p;
+  *dx = (s32)((2 * p + 1) * 16 / n) / 2 - 8;
+  *dy = (s32)((2 * q + 1) * 16 / n) / 2 - 8;
+}
+
+/* Supersampling with n samples a pixel (4, 8, 16, 32), 0: off. */
+static void ss_set(u32 n) {
+  ss_j = (int)(n / 4);
+  if (n)
+    mx_rt_init(&ss_rt, mx_gs.zbp, SS_W, SS_H, MX_GS_PSM_CT32,
+               mx_gs.zbp + mx_rt_pages(SS_W, SS_H, MX_GS_PSM_CT32), MX_GS_PSM_Z24);
 }
 
 /* A direction of the world in model space (the model turned by V.spin). */
@@ -759,7 +741,8 @@ static void gs_state(u32 m, int pass) {
      that writes Z), or the others (the soft edges) */
   c = mx_e_ad(c, MX_GS_REG_TEST_1,
               mx_gs_test(1, pass == P_EDGE ? 3 : 6, 0x40, 0, 0, 0, 1, 2));
-  c = mx_e_ad(c, MX_GS_REG_ZBUF_1, mx_gs_zbuf(mx_gs.zbp, MX_GS_PSM_Z24, pass == P_EDGE));
+  c = mx_e_ad(c, MX_GS_REG_ZBUF_1,
+              mx_gs_zbuf(ss_j ? ss_rt.zbp : mx_gs.zbp, MX_GS_PSM_Z24, pass == P_EDGE));
   c = mx_e_ad(c, MX_GS_REG_RGBAQ, mx_gs_rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f));
   mx_frame_commit(c);
   cur_mat = m | (u32)pass << 8;
@@ -2065,6 +2048,28 @@ static void draw_copy(float ox, float oz, const u8 *lod) {
 
 static char hud[4][128];
 static int hud_keys; /* the interactive mode: the buttons shown */
+static int no_hud;   /* pictures of the scene alone */
+
+/* R3's steps: AA1, the display filter (MX_SMOOTH_*), supersampling's
+   samples a pixel */
+static const struct {
+  u8 aa1, smooth, ss;
+} quality[] = {{0, 0, 0},
+               {1, 0, 0},
+               {0, MX_SMOOTH_ACROSS, 0},
+               {1, MX_SMOOTH_ACROSS, 0},
+               {0, MX_SMOOTH_DOWN, 0},
+               {1, MX_SMOOTH_DOWN, 0},
+               {0, 0, 4},
+               {0, 0, 16},
+               {0, MX_SMOOTH_DOWN, 16}};
+static u32 quality_at;
+static void quality_set(u32 i) {
+  quality_at = i;
+  aa1 = quality[i].aa1;
+  mx_gs_smooth(quality[i].smooth);
+  ss_set(quality[i].ss);
+}
 
 /* name (16 bytes, maybe not ended) in capitals, a space before each capital
    after a small letter (FullClothes: FULL CLOTHES) */
@@ -2145,21 +2150,84 @@ static void hud_draw(void) {
     }
 }
 
+/* The copies of the scene (lod_sel). */
+static void draw_copies(void) {
+  float step = 2.4f * R, o = -step * itof(V.copies - 1) * 0.5f;
+  for (int z = 0; z < V.copies; z++)
+    for (int x = 0; x < V.copies; x++)
+      draw_copy(o + step * itof(x), o + step * itof(z), lod_sel[z * V.copies + x]);
+}
+
+/* The scene drawn tile by tile into the target and blended into the frame's
+   buffer buf; draw: the scene once (its copies). */
+static void ss_draw(int buf, void (*draw)(void)) {
+  struct mx_rt fb = mx_gs.rt[buf];
+  fb.zpsm = MX_RT_NOZ, fb.zmsk = 1; /* the target is where Z was */
+  /* the sprites draw with context 2: the frame's buffer */
+  u64 *c = mx_frame_direct(5 + 5);
+  c = mx_rt_e_env(c, &fb, 1, 0);
+  c = mx_e_ad_tag(c, 4, 1);
+  c = mx_e_ad(c, MX_GS_REG_TEX0_2, mx_rt_tex0(&ss_rt, 0, 1));
+  c = mx_e_ad(c, MX_GS_REG_TEX1_2, mx_gs_tex1(0, 0, 1, 1, 0, 0, 0));
+  c = mx_e_ad(c, MX_GS_REG_CLAMP_2, mx_gs_clamp(1, 1, 0, 0, 0, 0));
+  c = mx_e_ad(c, MX_GS_REG_TEST_2, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1));
+  mx_frame_commit(c);
+  for (u32 ty = 0; ty < ss_tiles[1]; ty++)
+    for (u32 tx = 0; tx < ss_tiles[0]; tx++) {
+      u32 b[4];
+      float cc[2];
+      ss_tile(tx, ty, b, cc);
+      /* the texel at u covers u - 0.5 .. u + 0.5 (16ths) */
+      float h = ss_s * 0.5f;
+      u32 u0 = (u32)((SS_W / 2 + ss_s * (itof((s32)b[0]) - cc[0]) + h) * 16 + 0.5f);
+      u32 v0 = (u32)((SS_H / 2 + ss_s * (itof((s32)b[1]) - cc[1]) + h) * 16 + 0.5f);
+      u32 u1 = (u32)((SS_W / 2 + ss_s * (itof((s32)b[2]) - cc[0]) + h) * 16 + 0.5f);
+      u32 v1 = (u32)((SS_H / 2 + ss_s * (itof((s32)b[3]) - cc[1]) + h) * 16 + 0.5f);
+      for (u32 p = 0; p < (u32)ss_j; p++) {
+        struct mx_rt t = ss_rt;
+        s32 dx, dy;
+        ss_jitter(p, (u32)ss_j, &dx, &dy);
+        t.ox = (u32)((s32)t.ox + dx), t.oy = (u32)((s32)t.oy + dy);
+        mx_frame_target(&t, 0);
+        c = mx_frame_direct(2 + 5 + 2);
+        c = mx_e_ad_tag(c, 1, 0);
+        c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(0, 0, 0, 0, 0, 0, 1, 1));
+        c = mx_rt_e_clear(c, &t, 0, 36, 40, 52, 0);
+        c = mx_e_ad_tag(c, 1, 1);
+        c = mx_e_ad(c, MX_GS_REG_TEST_1, mx_gs_test(1, 6, 0x40, 0, 0, 0, 1, 2));
+        mx_frame_commit(c);
+        cur_mat = ~0u;
+        draw();
+        mx_frame_texflush();
+        /* pass p: (Cs - Cd) / (p + 1) + Cd, the mean of the passes */
+        c = mx_frame_direct(7);
+        c = mx_e_ad_tag(c, 6, 1);
+        c = mx_e_ad(c, MX_GS_REG_ALPHA_2, mx_gs_alpha(0, 1, 2, 1, (128 + (p + 1) / 2) / (p + 1)));
+        c = mx_e_ad(c, MX_GS_REG_PRIM, mx_gs_prim(MX_GS_PRIM_SPRITE, 0, 1, 0, p != 0, 0, 1, 1, 0));
+        c = mx_e_ad(c, MX_GS_REG_UV, mx_gs_uv(u0, v0));
+        c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(&fb, b[0]), mx_rt_py(&fb, b[1]), 0));
+        c = mx_e_ad(c, MX_GS_REG_UV, mx_gs_uv(u1, v1));
+        c = mx_e_ad(c, MX_GS_REG_XYZ2, mx_gs_xyz(mx_rt_px(&fb, b[2]), mx_rt_py(&fb, b[3]), 0));
+        mx_frame_commit(c);
+      }
+    }
+  cur_mat = ~0u;
+  /* the HUD into the frame's buffer, without Z */
+  mx_frame_target(&fb, 0);
+}
+
 /* One frame of the view at time t (seconds). */
 static void frame(float t) {
   V.dist = clampf(V.dist, min_dist(), 20 * grid_radius());
   camera();
   ss_fit();
-  st_frame.verts = st_frame.indices = st_frame.tris = st_frame.draws = 0;
-  if (ss) {
-    mx_frame_begin_n();
-    u64 *c = mx_frame_direct(9 + 5 + 5);
-    c = mx_gs_e_draw_env(c, 0, 0);
-    c = mx_rt_e_env(c, &ss_rt, 0, 0);
-    mx_frame_commit(mx_rt_e_clear(c, &ss_rt, 0, 36, 40, 52, 1));
-  } else {
-    mx_frame_begin(36, 40, 52);
+  if (ss_j) {
+    u32 b[4];
+    float c[2];
+    ss_tile(0, 0, b, c); /* the levels of detail at the scale drawn */
   }
+  st_frame.verts = st_frame.indices = st_frame.tris = st_frame.draws = 0;
+  int buf = mx_frame_begin(36, 40, 52);
   {
     /* (Cs - Cd) As + Cd (blended passes, AA1), and the alpha test of the
        untextured programs (their alpha is 128) */
@@ -2183,17 +2251,14 @@ static void frame(float t) {
       lod_choose(mvp, lod_sel[z * V.copies + x]);
     }
   pose_frame(t, af);
-  for (int z = 0; z < V.copies; z++)
-    for (int x = 0; x < V.copies; x++)
-      draw_copy(o + step * itof(x), o + step * itof(z), lod_sel[z * V.copies + x]);
+  if (ss_j)
+    ss_draw(buf, draw_copies);
+  else
+    draw_copies();
   pose_end();
-  if (ss) {
-    mx_frame_present();
-    ss_present(36, 40, 52);
-  } else {
-    mx_frame_commit(mx_e_cnt(mx_frame_reserve(1), 0, mx_vif_flush(), 0));
-  }
-  hud_draw();
+  mx_frame_commit(mx_e_cnt(mx_frame_reserve(1), 0, mx_vif_flush(), 0));
+  if (!no_hud)
+    hud_draw();
   mx_frame_end();
 }
 
@@ -2232,11 +2297,11 @@ static void hud_mode(char *p) {
   if (aa1)
     p = hud_cat(p, "  AA1");
   if (mx_gs.smooth)
-    p = hud_cat(p, "  SOFT");
-  if (ss) {
+    p = hud_cat(p, mx_gs.smooth == MX_SMOOTH_DOWN ? "  DEFLICKER" : "  SOFT");
+  if (ss_j) {
+    /* the samples a pixel */
     p = hud_cat(p, "  SS ");
-    p = hud_u(p, (u32)(ss_s * 100 + 0.5f));
-    p = hud_cat(p, "%");
+    p = hud_u(p, (u32)(ss_s * ss_s * itof(ss_j) + 0.5f));
   }
   if (nlod > 1) {
     /* the level of each material (of the first copy) */
@@ -2523,13 +2588,8 @@ static void interactive(int nshader) {
       mx_frame_vsync(V.vsync ^= 1);
     if (b & MX_PAD_L3)
       view_start();
-    if (b & MX_PAD_R3) {
-      /* off, AA1, the filter, both, supersampling */
-      int m = ss ? 0 : (aa1 | mx_gs.smooth << 1) + 1;
-      aa1 = m & 1;
-      mx_gs_smooth(m >> 1 & 1);
-      ss_set(m == 4);
-    }
+    if (b & MX_PAD_R3)
+      quality_set((quality_at + 1) % (sizeof quality / sizeof *quality));
     u8 sticks[4];
     mx_pad_sticks(0, sticks);
     float ly = itof((s32)sticks[3] - 128) / 128;
@@ -2632,6 +2692,59 @@ static void record(void) {
 }
 #endif
 
+#ifdef MODEL_SHOTS
+/* -DMODEL_SHOTS: still pictures of the start view's angle at 0.8, 1.6 and
+   3 times fit_dist, each without and with AA1 and supersampling, without
+   the HUD: host:shot_d<k>_<mode>.tga. */
+static void shots(void) {
+  static const struct {
+    const char *name;
+    u8 aa1, ss;
+  } mode[] = {{"off", 0, 0},   {"aa1", 1, 0},   {"ss4", 0, 4},     {"ss8", 0, 8},
+              {"ss16", 0, 16}, {"ss32", 0, 32}, {"ss16aa1", 1, 16}};
+  static const float dk[] = {0.8f, 1.6f, 3.0f};
+  mx_frame_vsync(1);
+  pose_frames = 1;
+  no_hud = 1;
+  V.copies = 1, V.shader = S_SCEI, V.indexed = has_layout(1);
+  for (u32 k = 0; k < sizeof dk / sizeof *dk; k++)
+    for (u32 m = 0; m < sizeof mode / sizeof *mode; m++) {
+      view_start();
+      V.dist = dk[k] * fit_dist();
+      aa1 = mode[m].aa1;
+      ss_set(mode[m].ss);
+      frame(0.5f);
+      frame(0.5f);
+      u32 last = mx_gs.frames - 1, d0 = mx_count();
+      while (mx_gs.frames_done < last + 1 && mx_count() - d0 < 300000000u)
+        ;
+      mx_frame_stop();
+      char name[40] = "host:shot_d";
+      char *e = hud_u(name + 11, k);
+      e = hud_cat(e, "_");
+      e = hud_cat(e, mode[m].name);
+      hud_cat(e, ".tga");
+      mx_printf("model: %s: %u tiles of %u passes, scale %u%%\n", name, ss_tiles[0] * ss_tiles[1],
+                (u32)ss_j, (u32)(ss_s * 100 + 0.5f));
+      if (mx_gs_save_tga((int)(last & 1), name) < 0)
+        mx_printf("model: %s could not be written\n", name);
+      pipeline_restart();
+      /* the time a frame takes, without vsync */
+      mx_frame_vsync(0);
+      frame(0.5f);
+      u32 t0 = mx_count();
+      for (int i = 0; i < 60; i++)
+        frame(0.5f);
+      last = mx_gs.frames - 1;
+      while (mx_gs.frames_done < last + 1)
+        ;
+      u32 us = (mx_count() - t0) / 60 / 295;
+      mx_printf("model: %s: %u.%02u ms a frame\n", name, us / 1000, us % 1000 / 10);
+      mx_frame_vsync(1);
+    }
+}
+#endif
+
 int main(int argc, char **argv) {
   mx_gs_init(SW, SH);
   mx_vu_reset(3);
@@ -2705,11 +2818,16 @@ int main(int argc, char **argv) {
       continue;
     }
     if (!strcmp_(argv[a], "-soft")) {
-      mx_gs_smooth(1);
+      mx_gs_smooth(MX_SMOOTH_ACROSS);
+      continue;
+    }
+    if (!strcmp_(argv[a], "-deflicker")) {
+      mx_gs_smooth(MX_SMOOTH_DOWN);
       continue;
     }
     if (!strcmp_(argv[a], "-ss")) {
-      ss_set(1);
+      u32 n = a + 1 < argc && argv[a + 1][0] >= '0' && argv[a + 1][0] <= '9' ? atou_(argv[++a]) : 4;
+      ss_set(n == 8 || n == 16 || n == 32 ? n : 4);
       continue;
     }
     int n = model_read(argv[a], file_buf + used, MAX_FILE - used);
@@ -2734,6 +2852,12 @@ int main(int argc, char **argv) {
   }
   if (mx_pad_init() < 0)
     mx_printf("model: no pad driver\n");
+#ifdef MODEL_SHOTS
+  shots();
+  mx_frame_stop();
+  MX_TEST_END(0);
+  return 0;
+#endif
 #ifdef MODEL_RECORD
   record();
   mx_frame_stop();
