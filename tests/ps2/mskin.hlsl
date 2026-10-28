@@ -2,7 +2,7 @@
 // slots of the draw's palette) and their weights (V4-8U, summing to 255);
 // the joint matrices are blended by the weights and transform the position
 // and the normal from the bind pose into model space. The position is V3-16,
-// 1 / 32768 of the model's size from its middle (apps/model/mxm.h): the
+// 1 / 32768 of the model's size from its middle (libs/mxm/include/mxm/format.h): the
 // joint matrices have the size and the middle folded in.
 #include "vu.hlsli"
 
