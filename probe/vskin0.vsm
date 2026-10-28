@@ -1,6 +1,6 @@
 ; VU0 skinning kernels for probe/p15_vu0skin.c: a vertex of up to four
 ; joints, the joint matrices blended by the weights, the position and the
-; normal moved by them, the normal made 127 long (demos/model/model.c,
+; normal moved by them, the normal made 127 long (apps/model/model.c,
 ; skin_vertices).
 ;
 ; Data memory: the palette, column k of joint slot j at 32 * k + j (so a

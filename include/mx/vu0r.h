@@ -7,7 +7,7 @@
    of the PATH3 stream (<mx/frame.h>, mx_frame3_*). The EE is busy for the
    whole draw; VU1 renders the VIF1 stream meanwhile.
 
-   SCEI: the math of demos/model/mscei.hlsl (three directional lights
+   SCEI: the math of apps/model/mscei.hlsl (three directional lights
    clamped at 255, textured, perspective correct, the strip restart flag in
    the position's w), the same inputs and uniforms, the same results bit
    for bit (the compiled program's order of operations). */
@@ -15,7 +15,7 @@
 #include <mx/types.h>
 
 /* VU0 data memory of the uniforms (quadwords), and their count. 0 ..
-   MX_VU0R_UNI - 1 are the caller's (demos/model's skinning palette). */
+   MX_VU0R_UNI - 1 are the caller's (apps/model's skinning palette). */
 #define MX_VU0R_UNI 240
 #define MX_VU0R_UNI_QW 13
 /* Vertices of a GIF packet at most (a strip is cut into packets that repeat

@@ -1,5 +1,5 @@
 ; VU0 micro programs of the SCEI renderer (<mx/vu0r.h>, src/vu/vu0r.c): the
-; math of demos/model/mscei.hlsl for one vertex, fed through VF registers by
+; math of apps/model/mscei.hlsl for one vertex, fed through VF registers by
 ; the EE (two register sets: the EE fills one while VU0 runs the other), in
 ; the order of the compiled mscei (the same results, bit for bit): the
 ; MVP's w column first, the lights y, x, z, the colour as integers in the
@@ -15,7 +15,7 @@
 ; Set A: in P vf1 (position, w the strip restart flag), N vf2 (normal,
 ; s32), U vf3 (s32: s, t, 4096); out ST vf4, RGBAQ vf5, XYZ2 vf6.
 ; Set B: in vf7, vf8, vf9; out vf10, vf11, vf12.
-; Temporaries vf13..vf16. vf31 is not used (demos/model/vu0skin.vsm's).
+; Temporaries vf13..vf16. vf31 is not used (apps/model/vu0skin.vsm's).
 	.section .vutext, "ax", @progbits
 	.globl vu0scei_vu
 vu0scei_vu:

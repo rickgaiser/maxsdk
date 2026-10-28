@@ -53,11 +53,11 @@ one kick). "side s" = right triangles of s×s/2 pixels in rows; ADC = vertices s
 
 | Fact | Value | Conditions | Source | Date |
 |---|---|---|---|---|
-| SMODE2.FFMD = 1 (FRAME: every line in each field) with a 224-line buffer | both fields show the same image, half a line apart: the picture bobs at 60 Hz (seen as flicker of every edge on a TV) | interlaced NTSC | user on the TV, `demos/procgen/procgen.c` | 2026-10-23 |
-| 640×448 at 60 fields/s: FFMD = 0 (FIELD: every other line per field) from a 448-line buffer, DISPLAY.DH = 447 | `mx_gs_init(640, 448)`; each frame is drawn in full; two buffers + Z24 take 3.4 of the 4 MiB | | `demos/procgen/procgen.c` | 2026-10-23 |
+| SMODE2.FFMD = 1 (FRAME: every line in each field) with a 224-line buffer | both fields show the same image, half a line apart: the picture bobs at 60 Hz (seen as flicker of every edge on a TV) | interlaced NTSC | user on the TV, `apps/procgen/procgen.c` | 2026-10-23 |
+| 640×448 at 60 fields/s: FFMD = 0 (FIELD: every other line per field) from a 448-line buffer, DISPLAY.DH = 447 | `mx_gs_init(640, 448)`; each frame is drawn in full; two buffers + Z24 take 3.4 of the 4 MiB | | `apps/procgen/procgen.c` | 2026-10-23 |
 | No vsync, two buffers: the display switched at the vblank only | the next frame was already drawn into the buffer on screen (the whole screen flickers); now a frame is shown at its FINISH (it tears), before the GS starts on the next | `mx_frame_vsync(0)` | user on the TV | 2026-10-23 |
-| The first frame of a run is submitted at any point of the field | its first vblank is not a missed one: `mx_gs.missed` counts from the vblank after the run's first frame is shown | | `demos/procgen/procgen.c` | 2026-10-23 |
-| `mx_gs.slack`: EE cycles from a frame's FINISH to the vblank that shows it | procgen keeps 8–20 % of a field (its view distance follows it) | vsync on | `demos/procgen/procgen.c` | 2026-10-23 |
+| The first frame of a run is submitted at any point of the field | its first vblank is not a missed one: `mx_gs.missed` counts from the vblank after the run's first frame is shown | | `apps/procgen/procgen.c` | 2026-10-23 |
+| `mx_gs.slack`: EE cycles from a frame's FINISH to the vblank that shows it | procgen keeps 8–20 % of a field (its view distance follows it) | vsync on | `apps/procgen/procgen.c` | 2026-10-23 |
 
 ## Render targets, both contexts, display states (PS2, 2026-10-27, `tests/ps2/rt.c`)
 
@@ -93,7 +93,7 @@ largest first:
 The level: LOD = (log2(1/Q) << L) + K (LCM 0, per pixel from the interpolated Q: STQ only) or
 K (LCM 1). With Q = 1/w (the VU programs' `rcp(p.w)`) LOD = log2(w) + K, so K = log2(texels a
 model unit / pixels a model unit at w = 1) puts level 0 where a texel is a pixel
-(`mx_tex_lod_k`; `gltf2mxm.py` writes the texel density of each material, `demos/model` adds
+(`mx_tex_lod_k`; `gltf2mxm.py` writes the texel density of each material, `apps/model` adds
 the projection's). The GS knows the distance, not the slope of the surface: a surface at a
 slant gets the level of one facing the view at that distance (L > 0 makes the level rise
 faster). `mx_tex_e_mipgen` makes levels 1 .. n − 1 with the GS: a bilinear sprite half the size

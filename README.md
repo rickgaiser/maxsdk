@@ -15,7 +15,7 @@ make gen             # regenerate include/mx/hw/*.h, include/mx/bios.h, src/base
 
 VU programs are HLSL (`examples/*/*.hlsl`, `tests/ps2/*.hlsl`, [docs/hlsl.md](docs/hlsl.md)).
 A program on maxsdk includes `mk/maxsdk.mk`: the compiler flags, the link, and the rules for its
-`.vsm` and `.hlsl` programs (`demos/model/Makefile` is an example).
+`.vsm` and `.hlsl` programs (`ps2max/apps/model/Makefile` is an example).
 
 Run a test on PCSX2 with the `ps2-pcsx2-test` skill, on the PS2 with the `ps2-hw-test` skill
 (it takes the PS2 lock and waits for the restart after the run). Every test ends with
@@ -38,14 +38,9 @@ Each example has its own directory in `examples/`:
 | `display` | every video mode (NTSC/PAL interlaced and progressive, 480p, 576p, 720p, 1080i, VESA) with the picture's edge marked, and the two read circuits merged: an overlay over 2x magnified animation, a crossfade, a fade to black, the smooth filter. Pad: left/right mode, square scene, d-pad/L1/R1 move the picture; without a press it shows each once and exits |
 | `gsmax` | the GS at the rates of the GS manual's performance tables (setup per primitive type, fill rate), over PATH1 ([docs/gif-gs.md](docs/gif-gs.md)) |
 
-The apps in `demos/` (each with its own Makefile on `mk/maxsdk.mk`; they move out of maxsdk):
-
-| Demo | |
-|---|---|
-| `procgen` (`procgen.c`, `levels.c`) | generated terrain flight, the VU1 shader levels |
-| `model` | a glTF model (`tools/model/gltf2mxm.py`; built in: the Khronos Fox), turning and walking, drawn with HLSL shaders as strips or indexed (`opt -vu-indexed`), up to 16 × 16 copies; the vertices and triangles a second of each. `ps2client execee host:model.elf host:<model>.mxm` loads another model. Textures have MIPMAP levels (L1: on, trilinear, level colours, off; R1: bias); `model_mipshots.elf` saves each mode at four distances as `host:mip_*.tga`. `-vu0`: the first copy is drawn by the EE and VU0 over PATH3 while VU1 draws the others (the run checks it gives VU1's picture). `make model-record` builds `model_rec1.elf` / `model_rec8.elf`, which save 90 frames as `host:rec_*.tga` (`tools/model/frames2video.py` makes a GIF or MP4) |
-
-The model converter needs Python 3 and Pillow.
+Apps on maxsdk live in their own repos: `ps2max/apps/model` (a glTF model, skinned and animated,
+drawn by HLSL shaders, supersampled), `ps2max/apps/procgen` (generated terrain), with the MXM
+model converter in `ps2max/libs/mxm`.
 
 Floating point: build with `-ffinite-math-only` (the Makefile does). The R5900 FPU has no INF/NaN,
 so clang only uses it for finite math, and otherwise calls soft-float helpers that libmx does not
@@ -87,9 +82,8 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | `tests/host/`, `tests/ps2/` | host tests, PCSX2/PS2 tests |
 | `probe/` | one ELF per hardware question; results go to `docs/` |
 | `examples/<name>/` | the examples, one directory each |
-| `demos/<name>/` | the apps still in this tree, each with its own Makefile |
 | `mk/maxsdk.mk` | what a program on maxsdk includes: flags, link, the VU and HLSL rules |
-| `tools/model/` | glTF → MXM model converter, frames → video |
+| `tools/` | `symbolize.py` (exception backtraces), `trace.py`, `vuk/`, `vusched/` (hand-scheduled VU1 kernels), `vscode-vsm/` |
 
 ## Decisions (PLAN_MAXSDK.md section 7)
 

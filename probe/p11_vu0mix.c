@@ -1,7 +1,7 @@
 /* VU0 in macro and micro mode in one program (not at the same time): what
    happens to a macro instruction issued while a micro program runs, and to
    VF registers across a micro program? The micro program: the fBm kernel
-   (demos/procgen/fbm.hlsl, 254 points, 6 octaves, ~200 k cycles), started by
+   (apps/procgen/fbm.hlsl, 254 points, 6 octaves, ~200 k cycles), started by
    VCALLMS (mx_vuq without DMA). Macro instructions: VADD writing vf25 (the
    kernel uses it), plain and with the interlocked QMFC2.I; the kernel's
    results compared with those of an undisturbed run. */

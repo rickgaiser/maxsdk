@@ -4,7 +4,7 @@
    one of which calls a third (two levels); a chain sent on its own (its ret
    ends the transfer); and one queued by mx_dmaq_try_chain.
 
-   Part 2, mx_frame_init_chain: an HLSL program (demos/model/mflat.hlsl) draws
+   Part 2, mx_frame_init_chain: an HLSL program (apps/model/mflat.hlsl) draws
    a strip of NV vertices (several batches) by mx_frame_shader_draw at the
    top, and the same strip built once as a mesh chain (mx_shader_mesh) by
    mx_frame_shader_call, moved down by its uniforms, COPIES times per frame

@@ -1,6 +1,6 @@
 /* Indexed HLSL vertex programs (opt -vu-indexed, llvm VUEntryABI.md): the
-   quality-level shaders demos/procgen/lvl0-2.hlsl and the model demo's
-   demos/model/m*.hlsl built indexed (<name>_ix, the HLSL_IX list of the
+   quality-level shaders apps/procgen/lvl0-2.hlsl and the model demo's
+   apps/model/m*.hlsl built indexed (<name>_ix, the HLSL_IX list of the
    Makefile), single batches through VIF1 for every vertex count and a set of
    index counts, with random indices. The packet must be, index by index, the
    outputs of the strip program for the same vertex, bit for bit. The batches
@@ -193,7 +193,7 @@ static void near_float(u32 i, const char *what, int k, u32 got, float want) {
               (s32)(g.f * 100000.0f), (s32)(want * 100000.0f));
 }
 
-/* The same expressions as demos/model/mskin.hlsl; the uniforms in the places
+/* The same expressions as apps/model/mskin.hlsl; the uniforms in the places
    of its header (mvp 0-3). */
 static float wrap(float nl) {
   float h = nl * 0.5f + 0.5f;

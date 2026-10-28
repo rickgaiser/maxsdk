@@ -1,4 +1,4 @@
-/* PLAN_PROCGEN P3: the terrain noise (demos/procgen/fbm.hlsl) on VU0 through a VIF0
+/* PLAN_PROCGEN P3: the terrain noise (apps/procgen/fbm.hlsl) on VU0 through a VIF0
    queue, for a 33 x 33 chunk, against the same expressions on the EE, for 1,
    2 and 6 octaves. The hash takes the fraction of a product of about 4500,
    where a float step is 2^-11: the VU's order of rounding (ACC chains) moves

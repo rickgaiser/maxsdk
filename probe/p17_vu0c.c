@@ -1,7 +1,7 @@
 /* VU0 micro skinning fed through VF registers (probe/p16_vu0reg.c) with the
    compiler's VU0 additions (docs/llvm-issues.md 16-18): VCALLMS and CFC2.I
    of VI registers as instructions, -ffixed-vf1 .. -ffixed-vf31 (this file:
-   the programs of demos/model/vu0skin.vsm write most VF registers while
+   the programs of apps/model/vu0skin.vsm write most VF registers while
    they run, so no code in between may use any), and the input step in C
    (the MMI zero-extensions with $zero). Two feeders, both with the inputs
    from the scratchpad (toSPR chains of C vertices, double-buffered):

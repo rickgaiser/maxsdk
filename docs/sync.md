@@ -60,7 +60,7 @@ chain mode).
   results stored by SQC2 straight into PACKED GS packets (ST, RGBAQ, XYZ2) of the PATH3 stream.
   In the compiled mscei's order of operations (the MVP's w column first, the lights y x z, the
   colour as integers in the low bits of x + 1.5 · 2^23): the model demo's first copy is the
-  same picture, bit for bit, by VU1 and by the EE and VU0 (`demos/model`, `-vu0`), on PCSX2
+  same picture, bit for bit, by VU1 and by the EE and VU0 (`apps/model`, `-vu0`), on PCSX2
   and on the PS2.
 - The PS2's first measurement (model bench, MSCEI strips, 8 x 8 copies, the first copy by EE +
   VU0): 208.6 fps, VU1 83 %, EE 99 %, against 241.8 fps, VU1 98 %, EE 31 % with VU1 alone. The

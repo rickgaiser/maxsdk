@@ -41,20 +41,20 @@ renderer (`Renderer = 13` in `[EmuCore/GS]` of the flatpak's `inis/PCSX2.ini`, s
 | procgen's dust: the box wrap `q − floor(q)` of negative values | wrong (all motes out of view, none drawn) | right | `tests/ps2/dust.c` |
 | fBm noise on VU0 against the EE, 6 octaves (before the two rows above were handled) | 1022 of 1089 samples agree | 66 of 1089 | `tests/ps2/noise.c` |
 | The same with exact copies (LLVM) and the exact floor (vuk) | 1089 of 1089 | 1089 of 1089 | `tests/ps2/noise.c` |
-| A load through a bad pointer (procgen, address 0x1a8, from an LLVM miscompile) | TLB miss exception | reads low memory, the program goes on | `demos/procgen/procgen.c`, exception report |
+| A load through a bad pointer (procgen, address 0x1a8, from an LLVM miscompile) | TLB miss exception | reads low memory, the program goes on | `apps/procgen/procgen.c`, exception report |
 | A load from address 0x2 (misaligned) | not measured | no exception, returns 0 | scratch test of `src/base/exception.c` |
 | GS SPRITE with UV at texel edges, 1:1 (the font) | the last column and row of each glyph are not drawn; UV + 8 (half a texel) draws them | drawn either way | procgen screenshots |
-| Debug output of a line written in several writes, or the first lines when the SIF is first used in the middle of GS/DMA set-up | pieces lost (ps2link's udptty: one UDP broadcast per write) | nothing lost | `demos/procgen/levels.c`, `demos/procgen/procgen.c` |
-| procgen max count (no vsync) | 192 fps, 20.5 M vertices/s, VU1 99 % | 290 fps; busy shares 0 % | `demos/procgen/procgen.c` (PCSX2 timings are not data) |
+| Debug output of a line written in several writes, or the first lines when the SIF is first used in the middle of GS/DMA set-up | pieces lost (ps2link's udptty: one UDP broadcast per write) | nothing lost | `apps/procgen/levels.c`, `apps/procgen/procgen.c` |
+| procgen max count (no vsync) | 192 fps, 20.5 M vertices/s, VU1 99 % | 290 fps; busy shares 0 % | `apps/procgen/procgen.c` (PCSX2 timings are not data) |
 
 ## The PATH3 stream (PCSX2 2.5 and the PS2, 2026-10-28)
 
 | Behaviour | PS2 | PCSX2 | Source |
 |---|---|---|---|
 | VIF1 `MARK` with the I-bit | not measured (`mx_frame_present` relies on it stopping) | the interrupt comes (once VIF1 has been let go on before, VIF1_STAT.INT), VIF1 does not stop; VIF1_CODE reads 0 in the handler. An I-bit `NOP` after the `MARK` stops it, and VIF1_MARK has the value | `src/gs/frame3.c`, `tests/ps2/frame3.c` |
-| VIF1_STAT at the interrupt of an I-bit code; STC written then | STC between INT and VIS does **not** keep VIF1 from stopping: it stopped at the join for good (no further interrupt). Wait for VIS, then STC | INT set, VIS not yet (it follows when VIF1 tries the next code); STC clears both and VIF1 goes on | `src/gs/frame3.c` (`release`), `demos/model -vu0` |
-| `ctc2` CMSAR0 right before `vcallmsr` | starts at the **previous** CMSAR0 (already in [vu0.md](vu0.md)): the VU0 renderer's two register sets ran each other's programs, a different picture each run | starts at the new one | `src/vu/vu0r.c`, `demos/model -vu0` |
-| A reservation larger than a frame half (`mx_frame_reserve`) | ran into the next slot of the VIF1 stream while it was queued: VIF1 read colour data as VIFcodes (VIF1_CODE `ff595378`) and stopped | each slot is sent before the next is filled: no harm seen | `demos/common/hud.h` (now sized by `mx_frame_room`); `mx_frame_reserve` now ends the program |
+| VIF1_STAT at the interrupt of an I-bit code; STC written then | STC between INT and VIS does **not** keep VIF1 from stopping: it stopped at the join for good (no further interrupt). Wait for VIS, then STC | INT set, VIS not yet (it follows when VIF1 tries the next code); STC clears both and VIF1 goes on | `src/gs/frame3.c` (`release`), `apps/model -vu0` |
+| `ctc2` CMSAR0 right before `vcallmsr` | starts at the **previous** CMSAR0 (already in [vu0.md](vu0.md)): the VU0 renderer's two register sets ran each other's programs, a different picture each run | starts at the new one | `src/vu/vu0r.c`, `apps/model -vu0` |
+| A reservation larger than a frame half (`mx_frame_reserve`) | ran into the next slot of the VIF1 stream while it was queued: VIF1 read colour data as VIFcodes (VIF1_CODE `ff595378`) and stopped | each slot is sent before the next is filled: no harm seen | `src/gs/hud.c` (now sized by `mx_frame_room`); `mx_frame_reserve` now ends the program |
 | GIF_TAG0..P3TAG | not measured | read 0 | debugging `tests/ps2/frame3.c` |
 | A PATH3 GIF packet with fewer quadwords than its tag says | not measured | PATH3 keeps the GIF (GIF_STAT APATH 3, OPH 1, FQC 0) after the DMA ends; VIF1's next DIRECT or FLUSHA waits for ever | a test bug in `tests/ps2/frame3.c` |
 

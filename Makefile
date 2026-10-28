@@ -44,15 +44,8 @@ PROBES   := $(patsubst $(HERE)/probe/%.c,$(OUT)/probe/%.elf,$(wildcard $(HERE)/p
 EXAMPLES := $(patsubst %.c,$(OUT)/examples/%.elf,$(notdir $(wildcard $(HERE)/examples/*/*.c)))
 vpath %.c $(EXAMPLE_DIRS)
 
-# The apps still in this tree (demos/<name>, each with its own Makefile on
-# mk/maxsdk.mk), built into $(OUT)/demos/<name>.
-APPS     := $(notdir $(patsubst %/,%,$(wildcard $(HERE)/demos/*/)))
-
-all: $(LIB) $(CRT0) $(TESTS) $(PROBES) $(EXAMPLES) $(OUT)/batch/ps2batch.elf apps
+all: $(LIB) $(CRT0) $(TESTS) $(PROBES) $(EXAMPLES) $(OUT)/batch/ps2batch.elf
 lib: $(LIB) $(CRT0)
-
-apps: $(LIB) $(CRT0)
-	for a in $(APPS); do $(MAKE) -C $(HERE)/demos/$$a OUT=$(OUT)/demos/$$a MAXSDK_OUT=$(OUT) || exit; done
 
 $(OUT)/obj/%.c.o: $(HERE)/%.c $(HDRS)
 	@mkdir -p $(dir $@)
@@ -181,7 +174,7 @@ picolibc:
 	ninja -C $(PICOLIBC)/../build-meson install
 
 # ---- the combined PS2 batch ---------------------------------------------------
-# One ELF that runs the tests, probes and demos below in a row, so a single
+# One ELF that runs the tests, probes and examples below in a row, so a single
 # PS2 run covers them. Each program's main() is renamed to <name>_main.
 
 BATCH_SRCS := tests/ps2/dma.c tests/ps2/gs.c tests/ps2/vif.c tests/ps2/vu.c \
@@ -222,9 +215,8 @@ test-host: $(HOST_BIN)
 # Nothing from ps2sdk: no ps2sdk path in any link map, no include of a ps2sdk
 # header (the compiler is never given -I$PS2SDK), and no known ps2sdk symbol.
 check-deps: all
-	@! grep -l -i "ps2sdk" $(OUT)/tests/*.map $(OUT)/probe/*.map $(OUT)/examples/*.map \
-	  $(OUT)/demos/*/*.map 2>/dev/null
-	@! $(LLVM)/llvm-nm $(TESTS) $(PROBES) $(EXAMPLES) $(wildcard $(OUT)/demos/*/*.elf) 2>/dev/null | \
+	@! grep -l -i "ps2sdk" $(OUT)/tests/*.map $(OUT)/probe/*.map $(OUT)/examples/*.map 2>/dev/null
+	@! $(LLVM)/llvm-nm $(TESTS) $(PROBES) $(EXAMPLES) 2>/dev/null | \
 	  grep -E " (SifInitRpc|sceSifInitRpc|_ps2sdk_|InitMainThread|_InitSys|_libcglue)"
 	@echo "check-deps: no ps2sdk"
 
@@ -234,4 +226,4 @@ gen:
 clean:
 	rm -rf $(OUT)
 
-.PHONY: all lib apps batch libc picolibc test-host check-deps gen clean
+.PHONY: all lib batch libc picolibc test-host check-deps gen clean

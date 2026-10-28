@@ -1,5 +1,5 @@
 /* VU0 micro mode skinning fed through VF registers, by joint count (one,
-   two, four: demos/model/vu0skin.vsm, pipelined over two register sets),
+   two, four: apps/model/vu0skin.vsm, pipelined over two register sets),
    with the vertices read three ways: from main memory, from the scratchpad
    (toSPR chains of C vertices, double-buffered; the results written to main
    memory by the EE, as the model demo does: its fromSPR feeds the MFIFO

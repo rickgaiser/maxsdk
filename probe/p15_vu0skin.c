@@ -1,4 +1,4 @@
-/* VU0 skinning three ways: macro mode (demos/model/model.c's loops, the EE
+/* VU0 skinning three ways: macro mode (apps/model/model.c's loops, the EE
    issuing every COP2 instruction), micro mode fed through VF registers (the
    EE fills one set while VU0 runs the program of the other: QMTC2 in,
    VCALLMS, SQC2 / QMFC2 out; "Efficient CPU and VU0 Usage", SCEE DevCon

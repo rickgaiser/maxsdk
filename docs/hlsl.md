@@ -47,7 +47,7 @@ Out lvl2(In v) { ... }
 | Field values in an integer input | `_F<n>` after the format: an integer vector with more fields than its format gets n in the others, from ROW (STMASK 01; the header's `ROW`, which `mx_shader_e_context` sends with STROW). `int3 uv : TEXCOORD_V2_16_F4096` is (s, t, 4096), and `float4(vu::itof12(v.uv) * q, 0)` for GIF_ST is ITOF12 and MULq, without the ADDQ of q (mscei 21 → 20 cycles a vertex indexed, msceic 22 → 21, mskin 88 → 86). A field has one value for all inputs of a program |
 | Fields the GIF does not read | w of GIF_ST, z and w of GIF_UV, x, y and z of GIF_FOG (PACKED mode, float outputs): undefined, nothing computes them |
 | GIF register of an output | the semantic `GIF_RGBAQ GIF_ST GIF_UV GIF_XYZ2 GIF_XYZF2 GIF_FOG GIF_XYZ3 GIF_XYZF3`; two outputs to one register: `GIF_XYZF2_A`, `GIF_XYZF2_B` |
-| Skip a vertex (ADC) | bit 15 of XYZ2/XYZF2.w: add 2048 before `vu::ftoi4` (`demos/procgen/lvl3.hlsl`), or `o.xyz2.w = vu::adc(c)` for a 0/1 `c` |
+| Skip a vertex (ADC) | bit 15 of XYZ2/XYZF2.w: add 2048 before `vu::ftoi4` (`apps/procgen/lvl3.hlsl`), or `o.xyz2.w = vu::adc(c)` for a 0/1 `c` |
 | Clipping | `vu::clip(v, w)` judges `v` against ±\|w\| (CLIPw) and keeps the last four judgements; `vu::clipped(mask)` is 1 when a flag of `mask` is set (FCAND): `0x3FFFF` the triangle of a strip that ends at this vertex (`examples/vumax/vh_scei.hlsl`). Once per vertex: the flags go from vertex to vertex |
 | Colours for GIF_RGBAQ | `vu::rgba8(c)`: rounded by the magic number 1.5 · 2^23 (one FMAC add, which joins an add of a uniform before it and a clamp by a constant; \|c\| < 2^22, the GIF reads the low 8 bits); `int4(c)` truncates, by an FTOI0 of its own |
 | State from vertex to vertex (strips) | a `static` variable that the program writes; each batch starts with its initializer |
@@ -82,7 +82,7 @@ VU1 cycles an index for 3 outputs). A vertex that the triangles share is transfo
 | Switching programs | `mx_frame_shader_setup` waits (FLUSH) until the packets of the last program are read: the layouts overlap |
 
 Batches of N = 32: `lvl2` 176 indices, `mtex` 192, `mskin` (103 uniform quadwords) 96. The model
-demo (`demos/model/model.c`, `tools/model/gltf2mxm.py`) makes its clusters for the smallest of its
+demo (`apps/model/model.c`, `libs/mxm/tools/gltf2mxm.py`) makes its clusters for the smallest of its
 programs (`mtex`, `mscei`: 192).
 
 ## Compute programs (VU0 or VU1)
@@ -97,7 +97,7 @@ void dust(uint i : SV_DispatchThreadID) { x[i] = ...; }   // once per item
 ```
 
 With `SV_DispatchThreadID` the code runs once per item of the batch. Without it, it runs once per
-batch and loops itself: `x.GetDimensions(n, stride)` gives the item count (`demos/procgen/fbm.hlsl`,
+batch and loops itself: `x.GetDimensions(n, stride)` gives the item count (`apps/procgen/fbm.hlsl`,
 `tests/ps2/nest.hlsl`). One structured buffer; an item is a whole number of quadwords. The layout
 is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 
@@ -108,7 +108,7 @@ is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 | Integers | `int`/`uint` are 16 bits (VI registers); a 32-bit value in memory is its low half, a stored one is sign-extended |
 | Floats | the VU's: no NaN, infinity or denormals; `a > b` is `(a - b) * 2^127` clamped to 0..1, so values closer than 2^-126 compare equal |
 | Math | `sin cos tan exp exp2 log log2 pow atan atan2 asin acos floor ceil round trunc frac` are FMAC sequences (error ~1e-6, floor exact); `sqrt`, `rsqrt`, `rcp` and `/` use DIV/SQRT (Q) |
-| Reassociation | HLSL lets the compiler reassociate float math; `mul()` keeps the order of the columns. Code that needs the exact order, like a hash of a fraction, says `#pragma clang fp reassociate(off)`, for a file (`demos/procgen/fbm.hlsl`) or a `{ }` block (`demos/procgen/dust.hlsl`, `demos/procgen/water.hlsl`) |
+| Reassociation | HLSL lets the compiler reassociate float math; `mul()` keeps the order of the columns. Code that needs the exact order, like a hash of a fraction, says `#pragma clang fp reassociate(off)`, for a file (`apps/procgen/fbm.hlsl`) or a `{ }` block (`apps/procgen/dust.hlsl`, `apps/procgen/water.hlsl`) |
 | Constant tables | indexed by constants only (`static const` arrays at run-time indices are not supported) |
 | Spills | none by default: a program that needs more than the 31 VF registers is an error; reserve `-vu-spill-qw=N` quadwords at the top of data memory |
 | Integer vectors | done lane by lane in the 16-bit VI registers (`uint4 j = v.jnt * 4`); a `uint4` input lane is read with ILW |
@@ -119,11 +119,11 @@ is the one `mx_vuq_batch` uses: `MX_VU_KERNEL(NAME, vu, name_vu, name_vu_end)`.
 
 | Program | Unit | What | Test |
 |---|---|---|---|
-| `demos/procgen/lvl0..3.hlsl` | VU1 | procgen quality levels | `tests/ps2/shader.c` (every batch size, against the EE) |
-| `demos/procgen/tf0..2.hlsl`, `water.hlsl`, `tree.hlsl`, `dustdraw.hlsl` | VU1 | procgen terrain, water, trees, dust sprites | `tests/ps2/shader2.c`, `tests/ps2/dust.c` |
-| `demos/procgen/fbm.hlsl` | VU0 | terrain noise | `tests/ps2/noise.c` |
-| `demos/procgen/dust.hlsl` | VU0 | dust motes | `tests/ps2/dust.c` |
-| `demos/model/mflat.hlsl`, `mlit.hlsl`, `mtex.hlsl`, `mskin.hlsl` | VU1, also indexed | the model demo: colour; one light; texture (mskin, skinning with 4 joints of a 24-joint palette: only a test, the demo skins on the EE) | `tests/ps2/ishader.c` (indexed = strips bit for bit, every batch size; mskin against the EE), `demos/model/model.c` (the same picture both ways) |
+| `apps/procgen/lvl0..3.hlsl` | VU1 | procgen quality levels | `tests/ps2/shader.c` (every batch size, against the EE) |
+| `apps/procgen/tf0..2.hlsl`, `water.hlsl`, `tree.hlsl`, `dustdraw.hlsl` | VU1 | procgen terrain, water, trees, dust sprites | `tests/ps2/shader2.c`, `tests/ps2/dust.c` |
+| `apps/procgen/fbm.hlsl` | VU0 | terrain noise | `tests/ps2/noise.c` |
+| `apps/procgen/dust.hlsl` | VU0 | dust motes | `tests/ps2/dust.c` |
+| `apps/model/mflat.hlsl`, `mlit.hlsl`, `mtex.hlsl`, `mskin.hlsl` | VU1, also indexed | the model demo: colour; one light; texture (mskin, skinning with 4 joints of a 24-joint palette: only a test, the demo skins on the EE) | `tests/ps2/ishader.c` (indexed = strips bit for bit, every batch size; mskin against the EE), `apps/model/model.c` (the same picture both ways) |
 | `lvl0..2` indexed | VU1 | | `tests/ps2/ishader.c` |
 | `tests/ps2/floor.hlsl`, `nest.hlsl` | VU0 | floor, nested run-time loops | `tests/ps2/floor.c`, `tests/ps2/loops.c` |
 | `examples/vumax/vh_*.hlsl` | VU1 | the twins of vumax's hand kernels: flat, Gouraud, textured, one light, SCEI (three lights, clipping) | `examples/vumax/vumax.c` part 1 (every batch size, against the EE) |

@@ -1,4 +1,4 @@
-; VU0 skinning kernels for demos/model/model.c and probe/p16_vu0reg.c:
+; VU0 skinning kernels for apps/model/model.c and probe/p16_vu0reg.c:
 ; vertices of one, two and four joints fed through VF registers (see
 ; probe/vskin0.vsm), pipelined over two register sets. A call does the head
 ; of its set's vertex (R; the normal T and its square length S) and the tail
