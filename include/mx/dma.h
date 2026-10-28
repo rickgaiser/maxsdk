@@ -124,6 +124,9 @@ struct mx_dmaq {
   volatile int sleep_sema; /* semaphore to signal, -1: nobody sleeps */
   volatile u32 sleep_seq;
   int sema;                /* the queue's semaphore, -1 until first needed */
+  /* called by the end interrupt after each segment (in the handler) */
+  void (*on_done)(void *arg);
+  void *on_done_arg;
 };
 
 /* Take over channel ch: its end interrupt starts the next queued segment. */

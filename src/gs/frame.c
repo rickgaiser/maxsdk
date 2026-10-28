@@ -1,10 +1,20 @@
 #include <mx/debug.h>
 #include <mx/dma.h>
 #include <mx/frame.h>
+#include <mx/irq.h>
+#include <mx/mx.h>
 #include <mx/tex.h>
+#include <mx/timer.h>
 #include <mx/trace.h>
+#include <mx/vu.h>
+#include "frame_int.h"
 
 struct mx_frame_stats mx_frame_stats;
+
+void (*mx__frame3_end)(void);
+void (*mx__frame3_stop)(void);
+struct mx_dmaq *mx__frame3_q;
+void (*mx__frame3_report)(void);
 
 static struct {
   u64 *half[2];
@@ -14,6 +24,7 @@ static struct {
   int novsync;
   u32 ring_qw;
   int (*idle)(void);
+  int noidle; /* mx__frame_kick */
   /* chain mode: each half is copied (fromSPR) into a slot in memory, and
      the slot is queued on VIF1 when the next copy starts (or the stream
      must go out now: kick) */
@@ -39,7 +50,7 @@ void mx_frame_idle(int (*fn)(void)) { f.idle = fn; }
    over. Returns its cycles (idle, not waiting). */
 static u32 idle_while(int (*wait)(u32), u32 arg) {
   u32 busy = 0;
-  if (f.idle)
+  if (f.idle && !f.noidle)
     while (wait(arg)) {
       u32 t1 = mx_count();
       int more = f.idle();
@@ -49,6 +60,38 @@ static u32 idle_while(int (*wait)(u32), u32 arg) {
     }
   mx_frame_stats.idle += busy;
   return busy;
+}
+
+void mx__frame_stalled(const char *what) {
+  mx_printf("mx_frame: %s for 1 s: frames %u done %u shown %u (immediate %u); VIF1_STAT %08x "
+            "VIF1_CODE %08x VIF1_MARK %04x (%u interrupts) "
+            "VIF1 CHCR %08x MADR %08x TADR %08x; GIF_STAT %08x GIF CHCR %08x MADR %08x; "
+            "VPU_STAT %08x\n",
+            what, mx_gs.frames, mx_gs.frames_done, mx_gs.shown, mx_gs.immediate,
+            MX_R32(MX_VIF_VIF1_STAT), MX_R32(MX_VIF_VIF1_CODE), MX_R32(MX_VIF_VIF1_MARK),
+            mx_irq_intc_count(MX_INTC_VIF1), MX_DMA_REG(MX_CH_VIF1, CHCR),
+            MX_DMA_REG(MX_CH_VIF1, MADR), MX_DMA_REG(MX_CH_VIF1, TADR), MX_R32(MX_GIF_STAT),
+            MX_DMA_REG(MX_CH_GIF, CHCR), MX_DMA_REG(MX_CH_GIF, MADR), mx_vpu_stat());
+  /* the VIF1 chain's tags before TADR (uncached: DMA wrote them) */
+  u32 t = MX_DMA_REG(MX_CH_VIF1, TADR) & 0x1FFFFFF0u;
+  if (t >= 0x100080 && t < 0x2000000)
+    for (u32 a = t - 0x80; a < t + 0x20; a += 16) {
+      const volatile u32 *w = (const volatile u32 *)(uintptr_t)(0x20000000u | a);
+      mx_printf("  %08x: %08x %08x %08x %08x\n", a, w[0], w[1], w[2], w[3]);
+    }
+  if (mx__frame3_report)
+    mx__frame3_report();
+}
+
+/* Spin while wait(arg), with a report after a second. */
+static void spin(int (*wait)(u32), u32 arg, const char *what) {
+  u32 t0 = mx_count();
+  int reported = 0;
+  while (wait(arg))
+    if (!reported && mx_count() - t0 > MX_EE_HZ) {
+      mx__frame_stalled(what);
+      reported = 1;
+    }
 }
 
 static int ring_full(u32 qwc) { return mx_mfifo_used() + qwc >= f.ring_qw; }
@@ -122,8 +165,7 @@ static void chain_flush(u32 n) {
   u32 k = f.next;
   f.next = (k + 1) % f.nslot;
   u32 t0 = mx_count(), busy = idle_while(slot_busy, k);
-  while (slot_busy(k))
-    ;
+  spin(slot_busy, k, "a slot of the VIF1 stream not sent");
   mx_frame_stats.wait_ring += mx_count() - t0 - busy;
   mx_dma_from_spr(f.slot[k], f.half[f.cur], n + 1);
   f.pending = 1, f.pend = k;
@@ -156,10 +198,19 @@ static void kick(void) {
   submit();
 }
 
+void mx__frame_kick(void) {
+  f.noidle = 1;
+  kick();
+  f.noidle = 0;
+}
+int mx__frame_chain(void) { return f.chain; }
+
 void mx_frame_stop(void) {
   kick();
   if (f.chain) {
     mx_dmaq_release(&f.q);
+    if (mx__frame3_stop)
+      mx__frame3_stop();
   } else {
     mx_mfifo_push_wait();
     mx_mfifo_stop();
@@ -167,7 +218,15 @@ void mx_frame_stop(void) {
   mx_gs.counting = 0;
 }
 
+u32 mx_frame_room(void) { return f.half_qw - (u32)f.chain; }
+
 u64 *mx_frame_reserve(u32 qwc) {
+  if (qwc > mx_frame_room()) {
+    /* it would run past the half, and in chain mode past its slot */
+    mx_printf("mx_frame_reserve: %u quadwords, a half has room for %u (from %p)\n", qwc,
+              mx_frame_room(), __builtin_return_address(0));
+    mx_exit(254);
+  }
   if (f.pos + 2 * qwc > f.end)
     flush();
   return f.pos;
@@ -192,8 +251,7 @@ u32 mx_frame_begin_n(void) {
     kick();
     u32 t0 = mx_count(), busy = idle_while(not_ready, 0);
     mx_trace(MX_TR_WAIT_BEGIN, 0x100);
-    while (!mx_frame_ready())
-      ;
+    spin(not_ready, 0, "the frame's buffers not free");
     mx_trace(MX_TR_WAIT_END, 0x100);
     mx_frame_stats.wait_buffer += mx_count() - t0 - busy;
   }
@@ -236,6 +294,9 @@ void mx_frame_wait_path3(void) {
 /* The frame's FINISH. Counted before anything after it can be pushed: the
    FINISH interrupt only counts frames that were submitted. */
 static void finish(void) {
+  /* the PATH3 stream's packets of the frame first */
+  if (mx__frame3_end)
+    mx__frame3_end();
   u64 *c = mx_frame_reserve(3);
   c = mx_e_cnt(c, 2, mx_vif_flush(), mx_vif_direct(2));
   c = mx_e_ad_tag(c, 1, 1);
@@ -249,7 +310,7 @@ void mx_frame_present(void) {
   finish();
   /* VIF1 stops here; the vblank handler (mx_gs) lets it go on */
   mx_frame_commit(
-      mx_e_cnt(mx_frame_reserve(1), 0, 0, mx_vif_mark(mx_gs.frames & 0xFFFF) | MX_VIF_IBIT));
+      mx_e_cnt(mx_frame_reserve(1), 0, 0, mx_vif_mark(mx_gs.frames & 0x7FFF) | MX_VIF_IBIT));
   f.presenting = 1;
 }
 
@@ -426,9 +487,36 @@ int mx_frame_vu1_compute(const struct mx_kernel *k, const void *hdr, const void 
 /* ---- textures --------------------------------------------------------------- */
 
 static u32 tex_pk[2][64] MX_ALIGNED(64);
+static u32 tex_mip_pk[2][512] MX_ALIGNED(64);
+/* with the PATH3 stream: each buffer's upload in its GIF queue */
+static mx_event tex_ev[2][2];
+static u8 tex_ev_on[2][2];
+
+void mx__frame_tex_forget(void) {
+  for (int k = 0; k < 2; k++)
+    tex_ev_on[k][0] = tex_ev_on[k][1] = 0;
+}
+
+/* Wait until buffer (kind, slot) is free; -1 on a timeout. */
+static int tex_wait(int kind, int slot) {
+  if (!mx__frame3_q)
+    return mx_dma_wait(MX_CH_GIF);
+  if (tex_ev_on[kind][slot])
+    mx_event_wait(tex_ev[kind][slot]);
+  return 0;
+}
+
+static void tex_send(int kind, int slot, const void *chain) {
+  if (mx__frame3_q) {
+    tex_ev[kind][slot] = mx_dmaq_chain(mx__frame3_q, chain, 0);
+    tex_ev_on[kind][slot] = 1;
+  } else {
+    mx_dma_chain(MX_CH_GIF, chain, 0);
+  }
+}
 
 int mx_frame_texture(int slot, u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, const void *data) {
-  if (mx_dma_wait(MX_CH_GIF) < 0)
+  if (tex_wait(0, slot & 1) < 0)
     return -1;
   struct mx_pkt p;
   mx_pkt_begin(&p, tex_pk[slot & 1], sizeof tex_pk[0], 0);
@@ -438,14 +526,12 @@ int mx_frame_texture(int slot, u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, const vo
   if (mx_pkt_finish(&p) < 0)
     return -1;
   mx_pkt_writeback(&p);
-  mx_dma_chain(MX_CH_GIF, tex_pk[slot & 1], 0);
+  tex_send(0, slot & 1, tex_pk[slot & 1]);
   return 0;
 }
 
-static u32 tex_mip_pk[2][512] MX_ALIGNED(64);
-
 int mx_frame_tex_upload(int slot, const struct mx_tex *t, const void *const *data) {
-  if (mx_dma_wait(MX_CH_GIF) < 0)
+  if (tex_wait(1, slot & 1) < 0)
     return -1;
   struct mx_pkt p;
   mx_pkt_begin(&p, tex_mip_pk[slot & 1], sizeof tex_mip_pk[0], 0);
@@ -456,6 +542,6 @@ int mx_frame_tex_upload(int slot, const struct mx_tex *t, const void *const *dat
   if (mx_pkt_finish(&p) < 0)
     return -1;
   mx_pkt_writeback(&p);
-  mx_dma_chain(MX_CH_GIF, tex_mip_pk[slot & 1], 0);
+  tex_send(1, slot & 1, tex_mip_pk[slot & 1]);
   return 0;
 }

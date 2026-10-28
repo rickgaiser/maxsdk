@@ -97,8 +97,10 @@ u32 mx_vram_alloc(u32 pages) {
    drawn (its FINISH: mx_gs.frames_done reaches the MARK); let it go on. */
 static int present_release(void) {
   u32 code = MX_R32(MX_VIF_VIF1_CODE);
+  /* bit 15: the PATH3 stream's marks (frame3.c) */
   if (!(MX_R32(MX_VIF_VIF1_STAT) & MX_BIT(VIF_STAT_VIS)) ||
-      code >> 24 != (MX_VIF_IBIT >> 24 | MX_VIF_MARK) || (u16)(mx_gs.frames_done - code) & 0x8000)
+      code >> 24 != (MX_VIF_IBIT >> 24 | MX_VIF_MARK) || (code & 0x8000) ||
+      (mx_gs.frames_done - code) & 0x4000)
     return 0;
   MX_R32(MX_VIF_VIF1_FBRST) = (u32)MX_BIT(VIF_FBRST_STC);
   return 1;

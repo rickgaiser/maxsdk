@@ -55,15 +55,18 @@ static void hud_text(u32 x, u32 y, const char *s, u32 rgb, u32 scale) {
     n++;
   if (!n)
     return;
-  /* at most 48 characters a packet: a reservation must fit half of the
-     frame's scratchpad buffer (mx_frame_reserve) */
-  if (n > 48) {
-    char part[49];
-    for (u32 i = 0; i < 48; i++)
+  /* a packet's characters: a reservation must fit half of the frame's
+     scratchpad buffer (mx_frame_room) */
+  u32 max = (mx_frame_room() - 7) / 4;
+  if (max > 63)
+    max = 63;
+  if (n > max) {
+    char part[64];
+    for (u32 i = 0; i < max; i++)
       part[i] = s[i];
-    part[48] = 0;
+    part[max] = 0;
     hud_text(x, y, part, rgb, scale);
-    hud_text(x + 48 * 6 * scale, y, s + 48, rgb, scale);
+    hud_text(x + max * 6 * scale, y, s + max, rgb, scale);
     return;
   }
   u64 *c = mx_frame_direct(6 + 4 * n);

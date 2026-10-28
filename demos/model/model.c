@@ -45,7 +45,9 @@
    animation by springs, live, in world space). -mfifo: the frame stream
    through the MFIFO, every copy sending all its batches; by default the
    stream is in chain mode (mx_frame_init_chain) and each draw's batches are
-   built once a frame as a mesh chain that every copy calls.
+   built once a frame as a mesh chain that every copy calls. -vu0: the
+   first copy's solid strips with mscei are drawn by the EE and VU0
+   (mx_vu0r_scei) over PATH3 (mx_frame3_*), after VU1 has the others.
 
    The run, without a pad: for each shader one frame as strips and one
    indexed, which must be the same picture (the outputs are the same, bit
@@ -85,6 +87,7 @@
 #include <mx/pad.h>
 #include <mx/sif.h>
 #include <mx/tex.h>
+#include <mx/vu0r.h>
 #include "hud.h"
 #include "mflat.h"
 #include "mflat_ix.h"
@@ -600,7 +603,8 @@ static struct {
 /* the view's shader draws indexed (msceic: strips, the view as indexed) */
 static int ix_now(void) { return V.indexed && has_ix(V.shader); }
 
-/* -static: the programs draw the rest pose (skinned once) */
+/* -static: the programs draw the rest pose (skinned once into each
+   buffer: skin_frame) */
 static int static_pose;
 /* shader draws the model animated (what the EE skinned) */
 static int animated(int shader) {
@@ -634,6 +638,15 @@ static int ss_cur = -1; /* the tile being drawn, -1: none (the whole screen) */
 static int aa1;
 /* -cutout: the materials with alpha only alpha tested, not blended */
 static int cutout;
+/* -vu0: the first copy (the hero) drawn by the EE and VU0 (mx_vu0r_scei,
+   after vu0skin.vsm's programs in micro memory) over PATH3, with GS
+   context 2, where it can be: mscei, strips, the solid pass, without
+   supersampling or AA1; VU1 draws the other copies meanwhile. */
+static int use_vu0;
+static int hero;       /* the copy being drawn is the hero */
+static u32 hero_frame; /* the frame whose PATH3 target is set (+ 1) */
+static u32 hero_mat = ~0u;
+#define VU0R_ADDR 432
 
 /* The passes of a frame: the solid materials; then those with alpha
    (MXM_MAT_ALPHA), blended: their texels over half opaque, writing Z (the
@@ -844,6 +857,34 @@ static void gs_state(u32 m, int pass) {
   c = mx_e_ad(c, MX_GS_REG_RGBAQ, mx_gs_rgbaq(0x80, 0x80, 0x80, 0x80, 1.0f));
   mx_frame_commit(c);
   cur_mat = m | (u32)pass << 8;
+}
+
+/* The PATH3 stream's GS state for material m (solid pass), context 2; the
+   frame's target first. */
+static void gs_state3(u32 m) {
+  if (hero_frame != mx_frame_number() + 1) {
+    mx_frame3_target(&mx_gs.rt[mx_frame_number() & 1]);
+    hero_frame = mx_frame_number() + 1;
+    hero_mat = ~0u;
+  }
+  if (m == hero_mat)
+    return;
+  const struct mxm_mat *mt = &M.mat[m];
+  const struct mx_tex *t = mip_mode == MIP_COLOURS ? &M.probe : &M.tex[m];
+  s32 k =
+      mt->lod + mx_tex_lod_k(1.0f, ss_s * __builtin_sqrtf(FX * FY) * R / M.h->radius, 0) + mip_bias;
+  u64 tex1 = mip_mode == MIP_OFF ? mx_gs_tex1(0, 0, 1, 1, 0, 0, 0)
+             : mip_mode == MIP_COLOURS
+                 ? mx_gs_tex1(0, (M.tex[m].levels < t->levels ? M.tex[m].levels : t->levels) - 1u,
+                              0, 2, 0, 0, (u32)k)
+                 : mx_tex_tex1(t, 1, mip_mode == MIP_TRI ? 5 : 4, 0, k);
+  u64 *c = mx_frame3_reserve(8);
+  c = mx_e_ad_tag(c, 7, 1);
+  c = mx_tex_e_regs(c, t, 1, mx_tex_tex0(t, 1, 3), tex1);
+  c = mx_e_ad(c, MX_GS_REG_CLAMP_2, mx_gs_clamp(0, 0, 0, 0, 0, 0));
+  c = mx_e_ad(c, MX_GS_REG_TEST_2, mx_gs_test(1, 6, 0x40, 0, 0, 0, 1, 2));
+  mx_frame3_commit(mx_e_ad(c, MX_GS_REG_ZBUF_2, mx_gs_zbuf(mx_gs.zbp, MX_GS_PSM_Z24, 0)));
+  hero_mat = m;
 }
 
 /* The joint matrices (four columns each) of frame of the animation. */
@@ -1561,6 +1602,19 @@ static int skin_differs(u32 v, u32 bad) {
   return d;
 }
 
+/* What a buffer's rest pose was skinned for (the model, outfit, layout and
+   levels; 0: not the rest pose): -static skins it once into each buffer. */
+static u32 rest_key[2];
+static u32 rest_key_now(void) {
+  u32 h = 2166136261u;
+  h = (h ^ (u32)(uintptr_t)M.h) * 16777619u;
+  h = (h ^ outfit) * 16777619u;
+  h = (h ^ (u32)ix_now()) * 16777619u;
+  for (u32 mt = 0; mt < M.h->nmat; mt++)
+    h = (h ^ lod_need[mt]) * 16777619u;
+  return h | 1;
+}
+
 /* All clusters skinned both ways (a frame of the first animation), a group
    at a time: macro mode into buffer 0, the micro programs into 1; the
    vertices that differ (positions by more than 2^-18 of their size, normals
@@ -1568,6 +1622,7 @@ static int skin_differs(u32 v, u32 bad) {
 static u32 skin_check(void) {
   if (!M.skinned || !M.h->ncluster)
     return 0;
+  rest_key[0] = rest_key[1] = 0;
   joints_frame(0, 7);
   int micro = skin_micro;
   u32 bad = 0, nv = 0;
@@ -1639,6 +1694,10 @@ static void skin_frame(void) {
     ;
   /* what is drawn (the rest pose too: the buffer holds only that) */
   int rest = !animated(V.shader);
+  u32 key = rest ? rest_key_now() : 0;
+  if (rest && rest_key[skin_buf] == key)
+    return;
+  rest_key[skin_buf] = key;
   u32 t0 = mx_count(), n;
   int normals = rest || V.shader != S_FLAT;
   n = 0;
@@ -1812,6 +1871,7 @@ static int pose_same(void) {
    when the front pose is the same and has what the frame needs (a still
    pose, its springs at rest: not skinned again). */
 static void job_start(float t, u32 af, int layout, int normals) {
+  rest_key[0] = rest_key[1] = 0;
   if (!(P.n && !P.reset && t == P.t)) /* the springs at t already */
     phys_update(af, t);
   joints_frame((u32)V.anim, af);
@@ -2257,6 +2317,18 @@ static void draw_copy(float ox, float oz, const u8 *lod) {
         u32 first = M.skinned ? sk_rat[skin_buf][r] : sr->first;
         for (u32 i = 0; i < s->nin; i++)
           at[i] = (const u8 *)st[i] + first * s->in[i].bytes;
+        if (hero && shader == S_SCEI && pass == P_SOLID) {
+          /* the EE and VU0: the same uniforms, PATH3 */
+          gs_state3(mat);
+          set_uniforms(shader, m, light, eye, mat);
+          mx_vu0r_scei((const float (*)[4])uni,
+                       (u32)mx_gs_prim(MX_GS_PRIM_TRISTRIP, 1, 1, 0, 0, 0, 0, 1, 0), at[0], at[1],
+                       at[2], sr->n);
+          st_frame.verts += sr->n, st_frame.indices += sr->n;
+          st_frame.tris += run_tris[r];
+          st_frame.draws++;
+          continue;
+        }
         const struct mx_chain *ch = 0;
         if (!use_mfifo && !(ch = mesh_built(r))) {
           mx_shader_mesh(&mesh[r], mesh_buf(), s, prim_solid, at, sr->n);
@@ -2386,9 +2458,18 @@ static void hud_draw(void) {
 /* The copies of the scene (lod_sel). */
 static void draw_copies(void) {
   float step = 2.4f * R, o = -step * itof(V.copies - 1) * 0.5f;
+  /* -vu0: the first copy last, by the EE and VU0, while VU1 draws the
+     others (whose stream goes to VIF1 when the PATH3 stream begins) */
+  int vu0 = use_vu0 && !use_mfifo && ss_cur < 0 && !aa1 && !ix_now() && V.shader == S_SCEI;
   for (int z = 0; z < V.copies; z++)
     for (int x = 0; x < V.copies; x++)
-      draw_copy(o + step * itof(x), o + step * itof(z), lod_sel[z * V.copies + x]);
+      if (!vu0 || x || z)
+        draw_copy(o + step * itof(x), o + step * itof(z), lod_sel[z * V.copies + x]);
+  if (vu0) {
+    hero = 1;
+    draw_copy(o, o, lod_sel[0]);
+    hero = 0;
+  }
 }
 
 /* The scene drawn tile by tile into the target and blended into the frame's
@@ -2502,14 +2583,20 @@ static u32 pad_pressed(void) { return mx_pad_pressed(0); }
 
 static u8 ring[64 * 1024] MX_ALIGNED(64 * 1024);
 #define FRAME_SPR ((void *)0x70002000)
+/* -vu0: the PATH3 stream's halves in the last 4 KB, the frame's in 4 KB */
+#define P3_SPR ((void *)0x70003000)
+static u8 p3_mem[16 * 2048] MX_ALIGNED(64);
 
 /* the ring: the MFIFO's, or the slots of chain mode */
 static void pipeline_restart(void) {
   if (use_mfifo)
     mx_frame_init(ring, sizeof ring, FRAME_SPR, 0x2000);
   else
-    mx_frame_init_chain(ring, sizeof ring, FRAME_SPR, 0x2000);
+    mx_frame_init_chain(ring, sizeof ring, FRAME_SPR, use_vu0 ? 0x1000 : 0x2000);
+  if (use_vu0 && !use_mfifo)
+    mx_frame3_init(p3_mem, sizeof p3_mem, P3_SPR, 0x1000);
   mx_vu_forget(1);
+  hero_frame = 0;
   bound = 0;
 }
 
@@ -2572,6 +2659,8 @@ static void hud_mode(char *p) {
     for (u32 mt = 0; mt < M.h->nmat; mt++)
       *p++ = (char)('0' + lod_sel[0][mt]), *p = 0;
   }
+  if (use_vu0 && V.shader == S_SCEI && !ix_now() && !use_mfifo && !ss_j && !aa1)
+    p = hud_cat(p, "  EE+VU0");
   if (animated(V.shader))
     hud_cat(p, "  EE SKIN");
 }
@@ -2698,6 +2787,42 @@ static void view_start(void) {
   camera();
 }
 
+/* -vu0's hero: a still frame of mscei's strips with the first copy drawn by
+   VU1, and by the EE and VU0 (PATH3): the same picture. */
+static int hero_picture(void) {
+  if (!has_layout(0))
+    return 0;
+  int was = use_vu0;
+  for (int k = 0; k < 2; k++) {
+    use_vu0 = k;
+    mx_frame_stop();
+    pipeline_restart();
+    V.shader = S_SCEI, V.indexed = 0;
+    hud[0][0] = hud[1][0] = hud[2][0] = hud[3][0] = 0;
+    frame(0.25f);
+    if (picture(line_hash[k]) < 0) {
+      mx_printf("model: the picture could not be read\n");
+      use_vu0 = was;
+      return 1;
+    }
+  }
+  use_vu0 = was;
+  mx_frame_stop();
+  pipeline_restart();
+  u32 diff = 0, first = 0;
+  for (u32 y = 0; y < SH; y++)
+    if (line_hash[0][y] != line_hash[1][y] && !diff++)
+      first = y;
+  if (diff) {
+    mx_printf("model: MSCEI's first copy by VU1 and by the EE and VU0 differ in %u lines (the "
+              "first %u)\n",
+              diff, first);
+    return 1;
+  }
+  mx_printf("model: MSCEI's first copy by VU1 and by the EE and VU0: the same picture\n");
+  return 0;
+}
+
 /* One still frame of each shader as strips and indexed: the same picture. */
 static int same_pictures(int nshader) {
   int fail = 0;
@@ -2735,6 +2860,7 @@ static int same_pictures(int nshader) {
       mx_printf("model: %s strips and %s: the same picture\n", shader_names[s], other);
     }
   }
+  fail |= hero_picture();
   pose_frames = pf;
   return fail;
 }
@@ -3079,6 +3205,7 @@ int main(int argc, char **argv) {
   mx_gs_init(SW, SH);
   mx_vu_reset(3);
   mx_vu_load(0, vu0skin_vu, (u32)(vu0skin_vu_end - vu0skin_vu), 0);
+  mx_vu0r_load(VU0R_ADDR);
   pipeline_restart();
   mx_frame_idle(pose_idle);
   sh[S_FLAT][0] = MX_VU_SHADER(MFLAT, mflat_vu, mflat_vu_end);
@@ -3156,6 +3283,10 @@ int main(int argc, char **argv) {
       mip_bias = v[0] == '-' ? -(s32)atou_(v + 1) : (s32)atou_(v);
       continue;
     }
+    if (!strcmp_(argv[a], "-vu0")) {
+      use_vu0 = 1;
+      continue;
+    }
     if (!strcmp_(argv[a], "-aa")) {
       aa1 = 1;
       continue;
@@ -3186,7 +3317,7 @@ int main(int argc, char **argv) {
       mx_printf("model: %s could not be read\n", argv[a]);
     }
   }
-  if (use_mfifo) {
+  if (use_mfifo || use_vu0) {
     mx_frame_stop();
     pipeline_restart();
   }

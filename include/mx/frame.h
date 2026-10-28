@@ -84,8 +84,11 @@ MX_INLINE u32 mx_frame_done(void) { return mx_gs.frames_done; }
 MX_INLINE u32 mx_frame_number(void) { return mx_gs.frames; }
 
 /* Room for qwc quadwords of whole DMA packets (tags with their cnt data)
-   in the current half; returns the cursor. qwc <= half / 16. */
+   in the current half; returns the cursor. qwc <= mx_frame_room(): a
+   larger reservation ends the program. */
 u64 *mx_frame_reserve(u32 qwc);
+/* The most mx_frame_reserve takes: a half, less the end tag in chain mode. */
+u32 mx_frame_room(void);
 void mx_frame_commit(u64 *end);
 
 /* A CALL of chain ch (a VIF1 chain that ends with ret: mx_chain_close) in
@@ -348,8 +351,51 @@ void mx_frame_shader_call(const struct mx_shader *s, u32 prim, const void *uni,
    without waiting. The chain is built in the slot's own buffer. Returns 0,
    or -1 if the slot's previous upload is still running. */
 int mx_frame_texture(int slot, u32 dbp, u32 dbw, u32 psm, u32 w, u32 h, const void *data);
-/* The same for the levels of t, level n from data[n], in one chain. */
+/* The same for the levels of t, level n from data[n], in one chain. With the
+   PATH3 stream on (mx_frame3_init), both go through its GIF queue. */
 struct mx_tex;
 int mx_frame_tex_upload(int slot, const struct mx_tex *t, const void *const *data);
+
+/* ---- a second stream: GS packets over PATH3 (chain mode) ------------------------ */
+
+/* The EE (with VU0) draws next to VU1: GIF packets built in two scratchpad
+   halves at spr, each copied into a slot of mem (slots of half the area, at
+   most MX_FRAME_SLOTS) and sent by a queue on the GIF channel (PATH3). The
+   GIF takes turns between the paths at the end of each GS packet (a GIF tag
+   with EOP), so the streams' packets interleave in the GS.
+   - PATH3 draws with GS context 2 (PRIM.CTXT 1, mx_frame3_target), the VIF1
+     stream with context 1. The registers outside the contexts (TEXA,
+     COLCLAMP, DTHE, PRMODECONT, FOGCOL, TEXCLUT, DIMX, PABE) must be the same
+     for both; PRIM, RGBAQ, ST, UV, XYZ are written by every packet.
+   - Within a frame the order of the two streams' packets is not known:
+     Z-tested opaque geometry, or parts of the target the other does not draw.
+   - Frame n's PATH3 packets start once the VIF1 stream reaches the point
+     where the first of them was reserved (VIF1 stops there at an I-bit MARK
+     for the interrupt that starts them): reserve after the clear. VIF1 waits
+     at the end of frame n until the GIF queue has sent all of them (an I-bit
+     MARK, then FLUSHA), so FINISH comes after both streams.
+   Call after mx_frame_init_chain; mx_frame_stop ends it. Returns 0, or -1
+   (not chain mode, or fewer than two slots). */
+int mx_frame3_init(void *mem, u32 bytes, void *spr, u32 spr_bytes);
+/* Room for qwc quadwords of GIF packets (whole packets, their GIF tags
+   included; at most a half less 2) in the current half; returns the cursor. */
+u64 *mx_frame3_reserve(u32 qwc);
+void mx_frame3_commit(u64 *end);
+/* The most mx_frame3_reserve takes (a half less 2 quadwords). */
+u32 mx_frame3_room(void);
+/* A CALL of a DMA chain of GIF packets in memory that ends with a ret tag
+   (it and what it references must not change until the frame is done). */
+void mx_frame3_call(const void *chain);
+/* PATH3 draws into target t (context 2): FRAME_2, ZBUF_2, XYOFFSET_2,
+   SCISSOR_2. */
+void mx_frame3_target(const struct mx_rt *t);
+/* The PATH3 stream's counts. */
+struct mx_frame3_stats {
+  u32 slots;     /* slots sent */
+  u32 qw;        /* quadwords in them */
+  u32 wait_slot; /* EE cycles waiting for a free slot */
+  u32 held;      /* slots built before VIF1 reached their frame's start */
+};
+extern struct mx_frame3_stats mx_frame3_stats;
 
 #endif

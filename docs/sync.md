@@ -38,6 +38,41 @@ of these EE costs, so it is lower now; the remaining waits are the next target.
 * The demo is still synchronous per batch (wait, then mapped readback); toSPR readback of VU1
   (3.1 vs 26 cycles/qw) and double buffering are the next steps (phase 5).
 
+## EE + VU0 next to VU1: the PATH3 stream (2026-10-28, PCSX2 and the PS2)
+
+The EE User's Manual's "macro parallel connection" (9.1.3) and SCEE's "A Tale of Two Dinosaurs"
+(2000: EE + VU0 9.75, VU1 12.75, both 22.5 Mvert/s): VU1 draws over PATH1 from the VIF1 stream
+while the EE with VU0 builds GS packets for PATH3. maxsdk: `mx_frame3_*` (`src/gs/frame3.c`,
+chain mode).
+
+- The PATH3 packets are built in their own scratchpad halves, copied into slots (fromSPR) and
+  sent by a DMA queue on the GIF channel. Chain mode's fromSPR copies rule out a GIF MFIFO.
+- They draw with GS context 2. The GIF takes turns at packet ends (EOP), so the streams'
+  packets interleave in the GS, in no known order: Z-tested opaque geometry.
+- Frames are kept apart without MSKPATH3: an open mark in the VIF1 stream (MARK, I-bit NOP)
+  where the frame's first PATH3 packet was reserved; the VIF1 interrupt queues the slots held
+  until then. A join mark before the FINISH (FLUSH, MARK, I-bit NOP, FLUSHA): released by the
+  VIF1 or the GIF queue's interrupt once the queue has sent all of the frame's slots, so FLUSHA
+  then sees exactly the frame's PATH3 data. A FLUSHA without the join can pass in the gap
+  between two queued segments, and frame n + 1's slots (held until their open mark) cannot
+  slip in before it.
+- `mx_vu0r_scei` (`src/vu/vu0r.c`, `vu0scei.vsm`): mscei's math on VU0, two register sets, the
+  results stored by SQC2 straight into PACKED GS packets (ST, RGBAQ, XYZ2) of the PATH3 stream.
+  In the compiled mscei's order of operations (the MVP's w column first, the lights y x z, the
+  colour as integers in the low bits of x + 1.5 · 2^23): the model demo's first copy is the
+  same picture, bit for bit, by VU1 and by the EE and VU0 (`demos/model`, `-vu0`), on PCSX2
+  and on the PS2.
+- The PS2's first measurement (model bench, MSCEI strips, 8 x 8 copies, the first copy by EE +
+  VU0): 208.6 fps, VU1 83 %, EE 99 %, against 241.8 fps, VU1 98 %, EE 31 % with VU1 alone. The
+  EE is the bottleneck: about 1 M cycles a frame more for the hero's 832 vertices, far more
+  than the renderer's work. Suspect: PATH3 only gets the GIF while PATH1/2 are idle, VU1 keeps
+  PATH1 busy, the hero's ~41 KB of packets do not fit the 16 slots (32 KB), and the EE waits
+  for slots (`mx_frame3_stats.wait_slot`). Not measured yet.
+- Without skinning (Queen Marika, FullClothes, `-static`, one copy, MSCEI strips, the whole model
+  the hero): VU1 39.4 fps, 13.4 M strip vertices/s (VU1 99 %, EE 19 %); EE + VU0 18.5 fps,
+  6.2 M/s (EE 99 %): about 48 EE cycles a vertex (Dinosaurs: 9.75 M/s). Both at once on one
+  model (VU0 about a third of the strips) would be about 19 M/s.
+
 ## Phases 5-7: what is built, and what the PS2 measured (2026-10-23)
 
 Built, correct on PCSX2 and on the PS2 (batch ELF, 14 of 14 parts). PS2 numbers: see the

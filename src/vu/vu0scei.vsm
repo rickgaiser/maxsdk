@@ -1,0 +1,81 @@
+; VU0 micro programs of the SCEI renderer (<mx/vu0r.h>, src/vu/vu0r.c): the
+; math of demos/model/mscei.hlsl for one vertex, fed through VF registers by
+; the EE (two register sets: the EE fills one while VU0 runs the other), in
+; the order of the compiled mscei (the same results, bit for bit): the
+; MVP's w column first, the lights y, x, z, the colour as integers in the
+; low bits of x + 1.5 * 2^23 (0x4b400000), clamped there at 255.
+; No branches: the code runs at any address (mx_vu0r_load); offsets in
+; instructions: init 0, set A 24, set B 52.
+;
+; Data memory (MX_VU0R_UNI_QW quadwords at MX_VU0R_UNI): the uniforms in
+; mscei's order (columns of the MVP, a[3], e[3], amb, prm, scl). init loads
+; them into vf17..vf29, amb + 1.5 * 2^23 into vf30, and I = 0x4b4000ff (255
+; there).
+;
+; Set A: in P vf1 (position, w the strip restart flag), N vf2 (normal,
+; s32), U vf3 (s32: s, t, 4096); out ST vf4, RGBAQ vf5, XYZ2 vf6.
+; Set B: in vf7, vf8, vf9; out vf10, vf11, vf12.
+; Temporaries vf13..vf16. vf31 is not used (demos/model/vu0skin.vsm's).
+	.section .vutext, "ax", @progbits
+	.globl vu0scei_vu
+vu0scei_vu:
+
+	.macro end
+	nop[e]				nop
+	nop				nop
+	.endm
+
+	.macro vertex p, n, u, st, c, x
+	mulaw.xyzw acc, vf20, vf0w	nop
+	maddax.xyzw acc, vf17, \p\()x	nop
+	madday.xyzw acc, vf18, \p\()y	nop
+	maddz.xyzw vf13, vf19, \p\()z	nop
+	itof0.xyzw vf14, \n		nop
+	itof12.xyzw vf15, \u		div q, vf0w, vf13w
+	mulay.xyzw acc, vf22, vf14y	nop
+	maddax.xyzw acc, vf21, vf14x	nop
+	maddz.xyzw vf14, vf23, vf14z	nop
+	max.xyz vf14, vf14, vf0		nop
+	mulay.xyzw acc, vf25, vf14y	nop
+	maddax.xyzw acc, vf24, vf14x	nop
+	maddaz.xyzw acc, vf26, vf14z	nop
+	maddw.xyzw \c, vf30, vf0w	nop
+	minii.xyz \c, \c, i		waitq
+	mulq.xyzw vf16, vf13, q		move.w \x, \p
+	mulq.xyzw \st, vf15, q		nop
+	mulaw.xyzw acc, vf28, vf0w	nop
+	madd.xyz vf16, vf29, vf16	nop
+	ftoi4.xyz \x, vf16		nop
+	.endm
+
+vu0scei_init:
+	nop				lq.xyzw vf17, 240(vi0)
+	nop				lq.xyzw vf18, 241(vi0)
+	nop				lq.xyzw vf19, 242(vi0)
+	nop				lq.xyzw vf20, 243(vi0)
+	nop				lq.xyzw vf21, 244(vi0)
+	nop				lq.xyzw vf22, 245(vi0)
+	nop				lq.xyzw vf23, 246(vi0)
+	nop				lq.xyzw vf24, 247(vi0)
+	nop				lq.xyzw vf25, 248(vi0)
+	nop				lq.xyzw vf26, 249(vi0)
+	nop				lq.xyzw vf27, 250(vi0)
+	nop				lq.xyzw vf28, 251(vi0)
+	nop				lq.xyzw vf29, 252(vi0)
+	nop				loi 0x4b400000
+	addi.xyzw vf30, vf27, i		nop
+	nop				loi 0x4b4000ff
+	end
+
+	.org 24 * 8
+vu0scei_a:
+	vertex vf1, vf2, vf3, vf4, vf5, vf6
+	end
+
+	.org 52 * 8
+vu0scei_b:
+	vertex vf7, vf8, vf9, vf10, vf11, vf12
+	end
+
+	.globl vu0scei_vu_end
+vu0scei_vu_end:

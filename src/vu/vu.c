@@ -8,7 +8,7 @@
      lqc2 vf2, 0($9):           0xd9220000
      sqc2 vf1, 0($9):           0xf9210000
      vcallms 0:                 0x4a000038
-     ctc2 $8, vi27; vcallmsr:   0x48c8d800, 0x4a00d839
+     ctc2 $8, vi27; vcallmsr:   0x48c8d800, 0x4a00d839 (a SYNC.P between)
    They are the ones bench/vudemo used on the PS2. */
 
 #include <mx/bios.h>
@@ -105,8 +105,9 @@ void mx_vu0_call(u32 addr) {
     __asm__ volatile(".word 0x4a000038" ::: "memory"); /* vcallms 0 */
     return;
   }
-  /* ctc2 $8, vi27 (CMSAR0); vcallmsr vi27 */
-  __asm__ volatile("move $8, %0\n\t.word 0x48c8d800\n\t.word 0x4a00d839"
+  /* ctc2 $8, vi27 (CMSAR0); sync.p; vcallmsr vi27. Without the SYNC.P the
+     PS2 starts at the previous CMSAR0 (docs/vu0.md). */
+  __asm__ volatile("move $8, %0\n\t.word 0x48c8d800\n\tsync.p\n\t.word 0x4a00d839"
                    :
                    : "r"(addr)
                    : "$8", "memory");

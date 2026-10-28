@@ -42,7 +42,12 @@ DEMO_DIRS := $(patsubst %/,%,$(wildcard $(HERE)/demos/*/))
 # object with the code between the symbols <name>_vu and <name>_vu_end.
 VSMS     := $(wildcard $(HERE)/tests/ps2/*.vsm $(HERE)/probe/*.vsm $(HERE)/demos/*/*.vsm)
 VU_OBJS  := $(patsubst %.vsm,$(OUT)/vu/%.o,$(notdir $(VSMS)))
-vpath %.vsm $(HERE)/tests/ps2 $(HERE)/probe $(DEMO_DIRS)
+# the library's own (src/*/*.vsm) go into libmx.a
+LIB_VSMS := $(wildcard $(HERE)/src/*/*.vsm)
+LIB_OBJS += $(patsubst %.vsm,$(OUT)/vu/%.o,$(notdir $(LIB_VSMS)))
+vpath %.vsm $(HERE)/tests/ps2 $(HERE)/probe $(DEMO_DIRS) $(sort $(dir $(LIB_VSMS)))
+# the VU0 renderer's feeder: its asm statements keep VF registers live
+$(OUT)/obj/src/vu/vu0r.c.o: CFLAGS += -mvu0 $(foreach r,$(shell seq 1 31),-ffixed-vf$(r))
 
 $(OUT)/vu/%.vu.elf: %.vsm
 	@mkdir -p $(dir $@)

@@ -184,6 +184,8 @@ static void q_irq(void *arg) {
     q_start(q, &q->seg[h % MX_DMAQ_LEN]);
   else
     q->running = 0;
+  if (q->on_done)
+    q->on_done(q->on_done_arg);
   mx_trace(MX_TR_DMA_END, (u16)q->ch);
 }
 
@@ -194,6 +196,8 @@ void mx_dmaq_init(struct mx_dmaq *q, int ch) {
   q->running = 0;
   q->sleep_sema = -1;
   q->sema = -1;
+  q->on_done = 0;
+  q->on_done_arg = 0;
   /* a stale end status would fire as soon as the interrupt is enabled */
   MX_R32(MX_D_STAT) = 1u << ch;
   mx_irq_dmac(ch, q_irq, q);
