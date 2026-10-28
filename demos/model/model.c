@@ -3057,13 +3057,18 @@ static void shots(void) {
       /* the time a frame takes, without vsync */
       mx_frame_vsync(0);
       frame(0.5f);
-      u32 t0 = mx_count();
-      for (int i = 0; i < 60; i++)
+      /* summed a frame at a time: 60 slow frames take longer than the 14.6 s
+         the count takes to wrap */
+      u32 us = 0, t0 = mx_count(), t1;
+      for (int i = 0; i < 60; i++, t0 = t1) {
         frame(0.5f);
+        t1 = mx_count();
+        us += (t1 - t0) / 295;
+      }
       last = mx_gs.frames - 1;
       while (mx_gs.frames_done < last + 1)
         ;
-      u32 us = (mx_count() - t0) / 60 / 295;
+      us = (us + (mx_count() - t0) / 295) / 60;
       mx_printf("model: %s: %u.%02u ms a frame\n", name, us / 1000, us % 1000 / 10);
       mx_frame_vsync(1);
     }
