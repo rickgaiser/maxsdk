@@ -1,6 +1,6 @@
 # VU0
 
-## Macro mode (COP2), measured with `bench/uarch_tests.c` (2026-10-21)
+## Macro mode (COP2), measured with `apps/llvm_bench/uarch_tests.c` (2026-10-21)
 
 | Fact | Value |
 |---|---|
@@ -20,7 +20,7 @@
 | sw → sqc2 forwarding | 3.5 |
 | Unaligned load to vadd | 9 (ldl/ldr + pcpyld + qmtc2) vs 11 via the stack |
 | vftoi0 / vitof0 / vmr32 | latency 4, 1 per cycle |
-| vopmula → vopmsub → vopmula (cross product) | 5 (`bench/uarch_tests.c`, 2026-10-24) |
+| vopmula → vopmsub → vopmula (cross product) | 5 (`apps/llvm_bench/uarch_tests.c`, 2026-10-24) |
 | vclipw | 1 per cycle |
 | ACC ↔ VF copy (vmulaw acc, s, vf0w; vmsubx d, vf0, vf0x) | 5 round trip |
 | vmove; vmove.x then vmove.xyzw of the same register | 4; 5 (the merge waits only for its field) |
@@ -30,19 +30,19 @@
 
 | Fact | Value | Source | Date |
 |---|---|---|---|
-| Writing VU0 memory through the memory map (0x1100_4000) and starting with VCALLMS gave wrong results on the PS2 (fine on PCSX2 and with delays) | | `bench/vudemo` | 2026-10-23 |
-| What works: data in with `lqc2` + `vsqi`, out with `vlqi` + `sqc2`, start with `vcallms`, wait with `cfc2.i` | EE cost per qword in the demo: 17 to write, 8.5 to read | `bench/vudemo` | 2026-10-23 |
+| Writing VU0 memory through the memory map (0x1100_4000) and starting with VCALLMS gave wrong results on the PS2 (fine on PCSX2 and with delays) | | `apps/llvm_bench/vudemo` | 2026-10-23 |
+| What works: data in with `lqc2` + `vsqi`, out with `vlqi` + `sqc2`, start with `vcallms`, wait with `cfc2.i` | EE cost per qword in the demo: 17 to write, 8.5 to read | `apps/llvm_bench/vudemo` | 2026-10-23 |
 | `mx_vu0_write` (lqc2 + vsqi), 240 qw, data in the cache | 6.04 / 6.05 cycles/qw | `probe/p4_vu.c` | 2026-10-23 |
 | `mx_vu0_read` (vlqi + sqc2) to UCAB, 240 qw | 8.05 cycles/qw | `probe/p4_vu.c` | 2026-10-23 |
-| VU0 micro mode fed by **VIF0 DMA** (maxsdk `mx_vuq`, tags + header written cached and written back) is faster than COP2 in vudemo: VU0 alone 45.79 vs 49.66 cycles/qw, all three units 31.63 vs 35.56 | | `bench/vudemo` (`VU0_DMA` 1 vs 0) | 2026-10-23 |
+| VU0 micro mode fed by **VIF0 DMA** (maxsdk `mx_vuq`, tags + header written cached and written back) is faster than COP2 in vudemo: VU0 alone 45.79 vs 49.66 cycles/qw, all three units 31.63 vs 35.56 | | `apps/llvm_bench/vudemo` (`VU0_DMA` 1 vs 0) | 2026-10-23 |
 | VU0 memory must not be read (COP2 or mapped) while VU0 runs: double-buffered batches read while the next batch ran gave 951 of 1200 wrong values. COP2 transfers also change vi2/vi3 of a running program (`ctc2` does not wait). | | `tests/ps2/vu.c` (first version) | 2026-10-23 |
 | Double-buffered `mx_vuq` (ITOP + xitop ping-pong, next batch held at a VIF i-bit until the previous one is read, mapped readback) | correct; 74.4 cycles/qw vs 44.7 single-buffered (doubling kernel, batches of 60): the per-batch interrupt, the hold and the mapped reads cost more than the overlap gains | `probe/p4_vu.c` | 2026-10-23 |
 | VIF0 ITOP read by VU0 with `xitop`, MPG upload to VU0 through VIF0 | work | `tests/ps2/vu.c` | 2026-10-23 |
-| The assembler rejects `lqc2`/`sqc2`/`vcallms`/`cfc2.i` without `-mvu0`; they are encoded as `.word` (vcallms 0x4a000038, cfc2.i 0x4848e801) | | `bench/vudemo/vu.h` | 2026-10-23 |
+| The assembler rejects `lqc2`/`sqc2`/`vcallms`/`cfc2.i` without `-mvu0`; they are encoded as `.word` (vcallms 0x4a000038, cfc2.i 0x4848e801) | | `apps/llvm_bench/vudemo/vu.h` | 2026-10-23 |
 | **`ctc2` CMSAR0 directly followed by `vcallmsr` starts at the previous CMSAR0** (0 of 4). Two VNOPs between (VU User's Manual 5.4.6) or `sync.p` work 4 of 4; `ctc2.i` does not help; `vcallms imm` works. `mx_vu0_call(addr != 0)` and `mx_vu0r_scei` put a `sync.p` between (fixed 2026-10-28, after the VU0 renderer's sets ran each other's programs on the PS2) | `vcallms imm` 13 vs VNOP form 19 cycles start to end of a short program | vustate.c (in `maxsdk_vu_work_2026-10-24/`) | 2026-10-24 |
 | VU states (Ready / Run / Stop), ForceBreak, resume, reset: see [vu1.md](vu1.md#vu-states-vu0-and-vu1-ps2-2026-10-24) | | | 2026-10-24 |
 
-### Micro-mode instruction timing (PS2, 2026-10-24, `bench/vuuarch`)
+### Micro-mode instruction timing (PS2, 2026-10-24, `apps/llvm_bench/vuuarch`)
 
 Each probe body is unrolled 4 and 12 times in a VU loop; the difference of
 the EE cycle counts gives the cycles per body (EE and VU share one clock).
@@ -74,5 +74,5 @@ PCSX2 gives the same values for all value checks (Q, flags, branch VI).
 | Fact | Value | Source | Date |
 |---|---|---|---|
 | VU0 doubling kernel through VIF0, readback by COP2 vs by toSPR DMA from VU0 memory (`mx_vu0_read_dma`), batches of 240 | 29.8 vs 27.9 cycles/qw | `probe/p5_fast.c` | 2026-10-23 |
-| vudemo, VU0 results read back by DMA too, all three units | 30.88 cycles/qw (30.39 / 31.00 before) | `bench/vudemo` | 2026-10-23 |
-| vudemo through mx_sched (one pool: VU0 batches of 240, VU1 of 240, FPU chunks of 8): VU0 1200, VU1 1224, FPU 120 qw | **27.32 cycles/qw** (static schedule 30.88) | `bench/vudemo` MODE_SCHED | 2026-10-23 |
+| vudemo, VU0 results read back by DMA too, all three units | 30.88 cycles/qw (30.39 / 31.00 before) | `apps/llvm_bench/vudemo` | 2026-10-23 |
+| vudemo through mx_sched (one pool: VU0 batches of 240, VU1 of 240, FPU chunks of 8): VU0 1200, VU1 1224, FPU 120 qw | **27.32 cycles/qw** (static schedule 30.88) | `apps/llvm_bench/vudemo` MODE_SCHED | 2026-10-23 |

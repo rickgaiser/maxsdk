@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PS2MAX = Path(__file__).resolve().parents[5]
+PS2MAX = Path(__file__).resolve().parents[3]
 
 
 def find_symbolizer():
@@ -30,7 +30,7 @@ def find_symbolizer():
     candidates = [os.environ.get("LLVM_SYMBOLIZER", "")]
     if os.environ.get("LLVM"):
         candidates.append(os.path.join(os.environ["LLVM"], "llvm-symbolizer"))
-    candidates += [str(PS2MAX / "toolchain/build/llvm/bin/llvm-symbolizer"),
+    candidates += [str(PS2MAX / "build/toolchain/generic/llvm/feature/bin/llvm-symbolizer"),
                    str(PS2MAX / "install/llvm/bin/llvm-symbolizer")]
     for c in candidates:
         if c and os.access(c, os.X_OK):

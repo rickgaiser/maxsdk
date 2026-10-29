@@ -19,8 +19,8 @@ MAXSDK     := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 # the includer's first target stays the default goal
 MX_GOAL    := $(.DEFAULT_GOAL)
 PS2MAX     ?= $(abspath $(MAXSDK)/../..)
-LLVM       ?= $(PS2MAX)/toolchain/build/llvm/bin
-MAXSDK_OUT ?= $(PS2MAX)/toolchain/build/maxsdk/clang
+LLVM       ?= $(PS2MAX)/build/toolchain/generic/llvm/feature/bin
+MAXSDK_OUT ?= $(PS2MAX)/build/libs/maxsdk
 
 # -ffinite-math-only: the R5900 FPU has no INF/NaN, so clang only uses it for
 # finite math; without the flag it calls soft-float helpers (not in libmx).

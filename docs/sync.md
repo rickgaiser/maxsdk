@@ -1,6 +1,6 @@
 # Keeping all units busy
 
-## FPU + VU0 + VU1 polynomial demo (`bench/vudemo`, 2026-10-23, EE cycles per quadword, D = 16)
+## FPU + VU0 + VU1 polynomial demo (`apps/llvm_bench/vudemo`, 2026-10-23, EE cycles per quadword, D = 16)
 
 | Configuration | Cycles |
 |---|---|
@@ -16,7 +16,7 @@
 * What would lower it: VIF0 DMA for VU0 input, double-buffered VU1 batches, reductions instead of
   reading back every quadword.
 
-## The same demo on maxsdk (`bench/vudemo`, 2026-10-23, PS2, no ps2sdk)
+## The same demo on maxsdk (`apps/llvm_bench/vudemo`, 2026-10-23, PS2, no ps2sdk)
 
 | Configuration | ps2sdk version | maxsdk, VU0 by COP2 | + VU0 by VIF0 DMA | + VU1 read back by DMA (default) |
 |---|---|---|---|---|
@@ -83,7 +83,7 @@ table after this one.
 | Fences: DMA end interrupt vs polled VIF MARK (one chain, a MARK per batch) vs GS LABEL | `probe/p5_fast.c` | latency and per-batch cost of each; the default fence (D13) follows from it. `mx_vuq_wait` already polls the MARK (no interrupt on the wait path) |
 | Render pipeline: stream built in two SPR halves, pushed into an MFIFO ring, VIF1 drains it all the time; VU1 render kernel double-buffered (BASE/OFFSET + xtop), XGKICK; FINISH per frame, vblank swap | `include/mx/frame.h`, `examples/scene/scene.c` | frames per vsync, missed / starved vblanks, EE wait for the back buffer and for ring space, busy shares; double-buffered vs FLUSHE after every batch (no vsync, 256 cubes) |
 | Textures over PATH3 next to the stream; the stream waits with FLUSHA before the geometry that uses them | `examples/scene/scene.c`, `examples/allunits/allunits.c` | PATH3 vs PATH1 interleave in the busy shares |
-| mx_sched: VU workers take batches from a pool when idle, the EE takes small chunks; every wait polls the workers | `include/mx/sched.h`, `bench/vudemo` (MODE_SCHED) | cycles/qw vs the static schedule (31.00) and how the pool spreads over VU0, VU1 and the FPU |
+| mx_sched: VU workers take batches from a pool when idle, the EE takes small chunks; every wait polls the workers | `include/mx/sched.h`, `apps/llvm_bench/vudemo` (MODE_SCHED) | cycles/qw vs the static schedule (31.00) and how the pool spreads over VU0, VU1 and the FPU |
 | All units: VU1 render + GS, PATH3 texture, VU0 particle step on VIF0, EE/FPU matrices and sprites, step f-1 drawn in frame f | `examples/allunits/allunits.c` | busy share of every unit; every idle gap above 1 % of a frame needs a cause here |
 | VU1 compute between render passes (D16 b): FLUSH, MPG, run, stop at a VIF i-bit, EE reads by toSPR, resume | `mx_frame_vu1_compute`, `tests/ps2/frame.c` | the GS idle time it costs per pass |
 

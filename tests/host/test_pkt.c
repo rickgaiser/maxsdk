@@ -1,5 +1,5 @@
 /* Packet builder: bytes compared with hand-made packets, including the
-   packets bench/vudemo sends on the PS2. */
+   packets apps/llvm_bench/vudemo sends on the PS2. */
 
 #include "test.h"
 #include <mx/dma.h>

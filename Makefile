@@ -8,11 +8,11 @@
 #   make check-deps                         fail if anything links ps2sdk
 #   make gen                                regenerate the hardware headers
 #
-# Output goes to toolchain/build/maxsdk/clang/ by default.
+# Output goes to build/libs/maxsdk/ (in ps2max) by default.
 
 HERE       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 PS2MAX     ?= $(abspath $(HERE)/../..)
-OUT        ?= $(PS2MAX)/toolchain/build/maxsdk/clang
+OUT        ?= $(PS2MAX)/build/libs/maxsdk
 MAXSDK_OUT := $(OUT)
 HOSTCC     ?= cc
 
@@ -99,8 +99,8 @@ $(OUT)/examples/%.elf: %.c $(LIB) $(CRT0) $(VU_OBJS) $(HLSL_OBJS) $(HLSL_HDRS) $
 # (soft double and the float helpers that code without -ffinite-math-only
 # calls). Skipped while picolibc is not built.
 
-PICOLIBC     ?= $(PS2MAX)/toolchain/build/picolibc/install
-PICOLIBC_SRC ?= $(PS2MAX)/toolchain/build/picolibc/src
+PICOLIBC     ?= $(PS2MAX)/build/libs/picolibc/install
+PICOLIBC_SRC ?= $(PS2MAX)/libs/picolibc
 # compiler-rt's generic builtins, built like libmx (non-PIC; the toolchain's
 # own libclang_rt.builtins.a is PIC and its GOT relocations do not link here)
 RT_DIR       ?= $(PS2MAX)/toolchain/generic/llvm/llvm-project/compiler-rt/lib/builtins

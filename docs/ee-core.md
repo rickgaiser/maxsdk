@@ -1,6 +1,6 @@
 # EE core (R5900)
 
-Measured with the kernels in `bench/uarch_tests.c` (bench master, runs of 2026-10-20 and 2026-10-21)
+Measured with the kernels in `apps/llvm_bench/uarch_tests.c` (bench master, runs of 2026-10-20 and 2026-10-21)
 on the PS2. The LLVM scheduling model `MipsScheduleR5900.td` and the issue model
 `MipsR5900IssueModel` are fitted to these numbers. Latency = cycles until a dependent instruction
 can issue; throughput = cycles between independent ones.

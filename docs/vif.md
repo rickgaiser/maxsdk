@@ -2,7 +2,7 @@
 
 | Fact | Value | Source | Date |
 |---|---|---|---|
-| `FLUSH` waits for the GIF too and stalls VIF1 (VGW); `FLUSHE` only waits for the micro program to end | | `bench/vudemo` | 2026-10-23 |
+| `FLUSH` waits for the GIF too and stalls VIF1 (VGW); `FLUSHE` only waits for the micro program to end | | `apps/llvm_bench/vudemo` | 2026-10-23 |
 | UNPACK to VU1, 1024 vectors, VIF1 normal-mode DMA from memory, per vector: V4-32 | 4.76 / 4.82 cycles | `probe/p4_vu.c` | 2026-10-23 |
 | … V3-32 | 3.55 / 3.61 cycles | `probe/p4_vu.c` | 2026-10-23 |
 | … V2-16, V4-8, V4-5, S-32 | 2.10–2.12 cycles (the same for all four) | `probe/p4_vu.c` | 2026-10-23 |
