@@ -1,4 +1,4 @@
-// tests/ps2/vukloops.c: a run-time loop in a run-time loop, each pass over
+// tests/ps2/loops.c: a run-time loop in a run-time loop, each pass over
 // the same items: x[i] = x[i] * 3 + k, k = 1, 2, ... per pass.
 cbuffer Params {
     uint passes;

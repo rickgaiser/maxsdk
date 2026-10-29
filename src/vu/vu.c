@@ -9,7 +9,7 @@
      sqc2 vf1, 0($9):           0xf9210000
      vcallms 0:                 0x4a000038
      ctc2 $8, vi27; vcallmsr:   0x48c8d800, 0x4a00d839 (a SYNC.P between)
-   They are the ones bench/vudemo used on the PS2. */
+   They are the ones apps/llvm_bench/vudemo used on the PS2. */
 
 #include <mx/bios.h>
 #include <mx/emit.h>
@@ -474,7 +474,7 @@ mx_event mx_vuq_batch(struct mx_vuq *q, const struct mx_kernel *k, const void *h
   /* The kernel's code first, if other code replaced it at its address (two
      kernels that do not fit micro memory together take turns): MPG waits for
      the program before it to end. Code of an even number of instructions,
-     16-byte aligned (vuk's .vutext). */
+     16-byte aligned (the .vutext section llc writes). */
   if (!is_resident(q->vu, k->code, k->code_bytes, k->entry)) {
     const u8 *c = k->code;
     u32 left = k->code_bytes / 8, at = k->entry;

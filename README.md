@@ -5,7 +5,7 @@ ps2sdk: below it are only the PS2 BIOS and the hardware. The plan is `../PLAN_MA
 hardware facts are in [docs/](docs/README.md).
 
 ```
-make                 # libmx.a, crt0.o, tests/*.elf, probe/*.elf (clang, toolchain/build/maxsdk/clang)
+make                 # libmx.a, crt0.o, tests/*.elf, probe/*.elf (clang, ps2max build/libs/maxsdk)
 make picolibc        # picolibc 1.8.9 (checkout + libc/picolibc-r5900.patch) for the R5900
 make libc            # libmxc.a, librt.a and the C/C++ tests
 make test-host       # host tests: generated fields, packet bytes
@@ -57,10 +57,10 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | 1 | crt0, linker script, BIOS syscall stubs, mini C runtime, printf, SIF tty client | `tests/ps2/hello.c` |
 | 2 | interrupt dispatcher, DMA in every mode, MFIFO, stall control, interrupt-refilled queues + fences, timers, trace | `tests/ps2/dma.c`, `probe/p2_dma.c` |
 | 3 | DMA/VIF/GIF packet builder, GS setup, FINISH/SIGNAL/vsync, frame loop, upload, readback | `tests/ps2/gs.c`, `tests/ps2/vif.c`, `probe/p3_gs.c`, `examples/spin/spin.c` |
-| 4 | VU reset/control, COP2 transfers, microcode residency, kernels + queues, double buffering, T-bit, DMA readback | `tests/ps2/vu.c`, `probe/p4_vu.c`, `bench/vudemo` |
-| 5 | cursor emitters (`<mx/emit.h>`), MPG by ref tags, polled MARK waits, VU0 DMA readback, unit-state sampling, vuk launch parameters | `tests/host/test_emit.c`, `tests/ps2/vu.c`, `probe/p5_fast.c` |
+| 4 | VU reset/control, COP2 transfers, microcode residency, kernels + queues, double buffering, T-bit, DMA readback | `tests/ps2/vu.c`, `probe/p4_vu.c`, `apps/llvm_bench/vudemo` |
+| 5 | cursor emitters (`<mx/emit.h>`), MPG by ref tags, polled MARK waits, VU0 DMA readback, unit-state sampling, kernel launch parameters | `tests/host/test_emit.c`, `tests/ps2/vu.c`, `probe/p5_fast.c` |
 | 6 | render pipeline (`<mx/frame.h>`): MFIFO-fed VIF1 stream, VU1 render kernel with double buffering + XGKICK, PATH3 textures, GS register cache, vblank accounting, VU1 compute between passes | `tests/ps2/frame.c`, `examples/scene/scene.c`, `examples/spin/spin.c` |
-| 7 | `mx_sched` (`<mx/sched.h>`): pollers, pools, VU workers; all units at once | `examples/allunits/allunits.c`, `bench/vudemo` (sched) |
+| 7 | `mx_sched` (`<mx/sched.h>`): pollers, pools, VU workers; all units at once | `examples/allunits/allunits.c`, `apps/llvm_bench/vudemo` (sched) |
 | 8 | threads and semaphores on fences (`<mx/thread.h>`), picolibc + glue (`libc/`), compiler-rt builtins, a minimal C++ runtime, ps2sdk compat headers for bench (`compat/`) | `tests/ps2/thread.c`, `tests/libc/libc.c`, `tests/libc/cxx.cc`, `bench` (`SDK=maxsdk`) |
 
 ## Layout
@@ -83,7 +83,7 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | `probe/` | one ELF per hardware question; results go to `docs/` |
 | `examples/<name>/` | the examples, one directory each |
 | `mk/maxsdk.mk` | what a program on maxsdk includes: flags, link, the VU and HLSL rules |
-| `tools/` | `symbolize.py` (exception backtraces), `trace.py`, `vuk/`, `vusched/` (hand-scheduled VU1 kernels), `vscode-vsm/` |
+| `tools/` | `symbolize.py` (exception backtraces), `trace.py`, `vusched/` (hand-scheduled VU1 kernels), `vscode-vsm/` |
 
 ## Decisions (PLAN_MAXSDK.md section 7)
 

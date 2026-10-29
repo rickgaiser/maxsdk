@@ -32,7 +32,7 @@ Out water(In v) {
     float a1, a2;
     {
         // The phases summed in the order of the source: the same waves as
-        // vuk's, bit for bit (HLSL may reassociate otherwise).
+        // the EE version, bit for bit (HLSL may reassociate otherwise).
 #pragma clang fp reassociate(off)
         a1 = wx * 0.11 + wz * 0.07 + wave.x;
         a2 = wz * 0.13 - wx * 0.05 + wave.x * 1.3;

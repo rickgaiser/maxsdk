@@ -29,7 +29,9 @@ decision in maxsdk and in the compiler.
 * **PS2 measurements only.** PCSX2 results go to `pcsx2.md`, and only as correctness notes. PCSX2
   timings are never performance data.
 * Every number can be measured again: it names its probe. New probes live in `maxsdk/probe/`. Facts
-  imported in phase 0 name the bench file they came from (`bench/` is the `test_llvm_01` repo).
+  imported in phase 0 name the bench file they came from (`apps/llvm_bench/` is the `test_llvm_01` repo).
+  `vudemo` (with `mulprobe.c`) and vuk were removed from it on 2026-10-29; they are in its git
+  history.
 
 ## Hardware used
 
