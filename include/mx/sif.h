@@ -52,5 +52,10 @@ int mx_fio_read(int fd, void *data, u32 n);
 /* Returns the new position: mx_fio_lseek(fd, 0, MX_FIO_SEEK_END) is the size. */
 int mx_fio_lseek(int fd, s32 offset, int whence);
 int mx_fio_close(int fd);
+/* Directories: mx_fio_dread puts the next entry's name in name (room bytes)
+   and its size in *size (if size); returns > 0, 0 after the last entry. */
+int mx_fio_dopen(const char *path);
+int mx_fio_dread(int fd, char *name, u32 room, u32 *size);
+int mx_fio_dclose(int fd);
 
 #endif

@@ -420,3 +420,34 @@ int mx_gs_save_tga_rt(const struct mx_rt *t, const char *path) {
   mx_fio_close(fd);
   return r;
 }
+
+int mx_gs_save_tga_fields(const struct mx_rt *even, const struct mx_rt *odd, const char *path) {
+  static u32 line[1024] MX_ALIGNED(64);
+  static u8 out[1024 * 4] MX_ALIGNED(64);
+  u32 w = even->w, h = even->h;
+  if (even->psm != MX_GS_PSM_CT32 || odd->psm != MX_GS_PSM_CT32 || w > 1024 || odd->w != w ||
+      odd->h != h)
+    return -1;
+  int fd = mx_fio_open(path, MX_FIO_WRONLY | MX_FIO_CREAT | MX_FIO_TRUNC);
+  if (fd < 0)
+    return -1;
+  /* uncompressed true colour, origin at the top left */
+  u8 hdr[18] = {0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, (u8)w, (u8)(w >> 8), (u8)(2 * h),
+                (u8)(2 * h >> 8), 32, 0x28};
+  int r = mx_fio_write(fd, hdr, sizeof hdr);
+  for (u32 y = 0; y < 2 * h && r == 0; y++) {
+    const struct mx_rt *t = y & 1 ? odd : even;
+    if (mx_gs_download(line, MX_GS_PAGE(t->fbp), t->fbw, MX_GS_PSM_CT32, 0, y / 2, w, 1) < 0) {
+      r = -1;
+      break;
+    }
+    for (u32 x = 0; x < w; x++) {
+      u32 p = line[x];
+      out[4 * x] = (u8)(p >> 16), out[4 * x + 1] = (u8)(p >> 8), out[4 * x + 2] = (u8)p;
+      out[4 * x + 3] = 0xFF;
+    }
+    r = mx_fio_write(fd, out, 4 * w);
+  }
+  mx_fio_close(fd);
+  return r;
+}

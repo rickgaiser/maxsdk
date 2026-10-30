@@ -36,6 +36,9 @@
 #define FILEIO_READ 2
 #define FILEIO_WRITE 3
 #define FILEIO_LSEEK 4
+#define FILEIO_DOPEN 9
+#define FILEIO_DCLOSE 10
+#define FILEIO_DREAD 11
 
 #define RPC_PKT_SIZE 64
 #define NPKT 8
@@ -476,6 +479,67 @@ int mx_fio_close(int fd) {
   a[0] = fd;
   volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
   if (mx_sif_call(&fio, FILEIO_CLOSE, (void *)a, 16, (void *)r, 4) < 0)
+    return -1;
+  return r[0];
+}
+
+/* DOPEN: the path (at a 16-byte boundary); DREAD: the IOP sends the entry
+   (io_dirent_t: its stat, 40 bytes, then the name) by SIF DMA to buf. */
+int mx_fio_dopen(const char *path) {
+  if (fio_bind() < 0)
+    return -1;
+  static char dp_arg[256] MX_ALIGNED(64);
+  char *a = MX_UNCACHED(dp_arg);
+  u32 i = 0;
+  for (; path[i] && i < sizeof dp_arg - 1; i++)
+    a[i] = path[i];
+  a[i] = 0;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_DOPEN, a, sizeof dp_arg, (void *)r, 4) < 0)
+    return -1;
+  return r[0];
+}
+
+int mx_fio_dread(int fd, char *name, u32 room, u32 *size) {
+  if (fio_bind() < 0)
+    return -1;
+  static struct {
+    u32 mode, attr, size;
+    u8 time[3][8];
+    u32 hisize;
+    char name[256];
+    u32 unknown;
+  } de MX_ALIGNED(64);
+  static s32 dr_arg[4] MX_ALIGNED(64);
+  mx_dcache_writeback(&de, sizeof de); /* no dirty lines for the DMA to meet */
+  mx_dcache_invalidate(&de, sizeof de);
+  volatile s32 *a = (volatile s32 *)MX_UNCACHED(dr_arg);
+  a[0] = fd;
+  a[1] = (s32)(uintptr_t)&de;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_DREAD, (void *)a, 16, (void *)r, 4) < 0)
+    return -1;
+  if (r[0] <= 0)
+    return r[0];
+  volatile __typeof__(de) *e = MX_UNCACHED(&de);
+  u32 i = 0;
+  for (; room && i < room - 1 && i < sizeof de.name && e->name[i]; i++)
+    name[i] = e->name[i];
+  if (room)
+    name[i] = 0;
+  if (size)
+    *size = e->size;
+  return r[0];
+}
+
+int mx_fio_dclose(int fd) {
+  if (fio_bind() < 0)
+    return -1;
+  static s32 dc_arg[4] MX_ALIGNED(64);
+  volatile s32 *a = (volatile s32 *)MX_UNCACHED(dc_arg);
+  a[0] = fd;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, FILEIO_DCLOSE, (void *)a, 16, (void *)r, 4) < 0)
     return -1;
   return r[0];
 }

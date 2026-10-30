@@ -184,5 +184,9 @@ int mx_gs_save_tga(int buf, const char *path);
 /* The same for target t (32-bit, at most 1024 wide); its lines are written
    twice when the mode shows each line in both fields. */
 int mx_gs_save_tga_rt(const struct mx_rt *t, const char *path);
+/* Both fields of an interlaced frame drawn a field at a time (FRAME mode):
+   the lines of even and odd (32-bit, the same size, at most 1024 wide) one
+   after the other, even's first: twice their lines. */
+int mx_gs_save_tga_fields(const struct mx_rt *even, const struct mx_rt *odd, const char *path);
 
 #endif
