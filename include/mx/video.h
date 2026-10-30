@@ -55,7 +55,9 @@ MX_INLINE u32 mx_video_line_lines(const struct mx_video_mode *m) {
    no vblank within 100 ms: the console does not have the mode (the frame
    pipeline would wait for ever); set another one. */
 int mx_video_set(const struct mx_video_mode *m);
-/* The field being shown (CSR.FIELD): 0 even, 1 odd. */
+/* The field being shown, from the vblank that starts it: 0 even, 1 odd.
+   CSR.FIELD flips about 220 us after the vblank interrupt; it is read
+   accordingly, waiting up to 150 us when read around the flip. */
 u32 mx_video_field(void);
 /* The board's offsets of the active area for a mode (the BIOS's
    GetGsDxDyOffset, as gsKit uses for modes other than NTSC/PAL). Only BIOSes

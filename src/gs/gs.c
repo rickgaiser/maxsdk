@@ -75,7 +75,19 @@ void mx_gs_smooth(int mode) {
     mx_display_apply(&def[(mx_gs.shown ? mx_gs.shown - 1 : 0) & 1]);
 }
 
-u32 mx_video_field(void) { return (u32)MX_GET(GS_CSR_FIELD, CSR); }
+/* CSR.FIELD flips about 220 us after the vblank interrupt (PS2 and PCSX2,
+   2026-10-30): before it, the field that ended. Around it, wait until it
+   has flipped. */
+#define FIELD_OLD 44237u  /* 150 us */
+#define FIELD_SURE 88474u /* 300 us */
+u32 mx_video_field(void) {
+  u32 t = mx_count() - mx_gs.vsync_at;
+  if (t < FIELD_OLD)
+    return (u32)MX_GET(GS_CSR_FIELD, CSR) ^ 1;
+  while (t < FIELD_SURE)
+    t = mx_count() - mx_gs.vsync_at;
+  return (u32)MX_GET(GS_CSR_FIELD, CSR);
+}
 
 void mx_vram_reset(void) { mx_gs.vram = mx_gs.tbp = 0; }
 
