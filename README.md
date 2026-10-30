@@ -29,6 +29,10 @@ that run every test and expect status 0 must skip it.
 `make batch` builds `batch/ps2batch.elf`: all PS2 tests, the phase 2–5 probes and the
 examples spin, scene and allunits in one ELF, so one PS2 run covers them.
 
+New to maxsdk? Start with the [tutorials](tutorials/README.md): the basics (the frame loop,
+GIF packets, the pad), graphics (triangles, textures, blending, the Z buffer), and VU1 programs
+in HLSL, step by step with a program and a picture for each step.
+
 Each example has its own directory in `examples/`:
 
 | Example | |
