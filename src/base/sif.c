@@ -37,6 +37,9 @@
 #define FILEIO_READ 2
 #define FILEIO_WRITE 3
 #define FILEIO_LSEEK 4
+#define FILEIO_REMOVE 6
+#define FILEIO_MKDIR 7
+#define FILEIO_RMDIR 8
 #define FILEIO_DOPEN 9
 #define FILEIO_DCLOSE 10
 #define FILEIO_DREAD 11
@@ -129,6 +132,44 @@ static void rpc_free(void *p) {
     pkt_busy &= ~(1u << i);
 }
 
+/* EE servers for the IOP's binds and calls (mx_sif_serve). A bind packet:
+   pkt_addr (word 5), client (7), sid (8); a call: pkt_addr, client, rpc
+   number (8), its data was sent to our buffer. The answer is an RPC_END with
+   the packet address, the client and the command (8), for a bind also the
+   server, its buffer and cbuffer (9-11): the IOP's sifrpc takes them into the
+   client and frees its packet. */
+#define NSERVER 4
+
+static struct server {
+  u32 sid;
+  mx_sif_server_fn fn;
+  void *arg;
+} servers[NSERVER];
+static u8 server_buf[NSERVER][MX_SIF_SERVER_BUF] MX_ALIGNED(64);
+
+static void serve(const u32 *pkt) {
+  u8 *r = reply_ring[reply_idx++ % NPKT];
+  volatile u32 *rp = uw(r);
+  for (int i = 4; i < 12; i++)
+    rp[i] = 0;
+  rp[5] = pkt[5];
+  rp[7] = pkt[7];
+  rp[8] = pkt[2];
+  if (pkt[2] == CMD_RPC_BIND) {
+    for (int i = 0; i < NSERVER; i++) {
+      if (servers[i].fn && servers[i].sid == pkt[8]) {
+        rp[9] = (u32)(uintptr_t)&servers[i];
+        rp[10] = (u32)(uintptr_t)server_buf[i];
+      }
+    }
+  } else {
+    struct server *s = (struct server *)(uintptr_t)pkt[13];
+    if (s >= servers && s < servers + NSERVER && s->fn)
+      s->fn((int)pkt[8], s->arg);
+  }
+  send_cmd(1, CMD_RPC_END, r, RPC_PKT_SIZE, 0, 0, 0);
+}
+
 /* SIF0 (IOP -> EE) DMA end: one command packet is in rx_buf. */
 static int sif0_handler(int ch, void *arg, void *addr) {
   (void)ch, (void)arg, (void)addr;
@@ -177,10 +218,26 @@ static int sif0_handler(int ch, void *arg, void *addr) {
              pkt[10]);
     break;
   }
+  case CMD_RPC_BIND:
+  case CMD_RPC_CALL:
+    serve(pkt);
+    break;
   default:
     break;
   }
   return 0;
+}
+
+int mx_sif_serve(u32 sid, mx_sif_server_fn fn, void *arg) {
+  for (int i = 0; i < NSERVER; i++) {
+    if (!servers[i].fn || servers[i].sid == sid) {
+      servers[i].arg = arg;
+      servers[i].sid = sid;
+      servers[i].fn = fn;
+      return 0;
+    }
+  }
+  return -1;
 }
 
 int mx_sif_ready(void) { return sif_state == 1; }
@@ -620,3 +677,32 @@ int mx_fio_dclose(int fd) {
     return -1;
   return r[0];
 }
+
+/* REMOVE, MKDIR and RMDIR: the path (the ROM's MKDIR takes no mode). FILEIO
+   1.1's REMOVE goes on into MKDIR: patched first (mx_iop_patch_fileio). */
+static int fio_path_call(int fn, const char *path) {
+  if (fio_bind() < 0)
+    return -1;
+  static int patched;
+  if (!patched) {
+    patched = 1;
+    mx_iop_patch_fileio();
+  }
+  static char pa_arg[256] MX_ALIGNED(64);
+  char *a = MX_UNCACHED(pa_arg);
+  u32 i = 0;
+  for (; path[i] && i < sizeof pa_arg - 1; i++)
+    a[i] = path[i];
+  a[i] = 0;
+  volatile s32 *r = (volatile s32 *)MX_UNCACHED(wr_result);
+  if (mx_sif_call(&fio, (u32)fn, a, sizeof pa_arg, (void *)r, 4) < 0)
+    return -1;
+  return r[0];
+}
+
+int mx_fio_remove(const char *path) { return fio_path_call(FILEIO_REMOVE, path); }
+int mx_fio_mkdir(const char *path, int mode) {
+  (void)mode;
+  return fio_path_call(FILEIO_MKDIR, path);
+}
+int mx_fio_rmdir(const char *path) { return fio_path_call(FILEIO_RMDIR, path); }

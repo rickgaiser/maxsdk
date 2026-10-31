@@ -65,3 +65,4 @@ renderer (`Renderer = 13` in `[EmuCore/GS]` of the flatpak's `inis/PCSX2.ini`, s
 | MFIFO drain (VIF1, TTE) reads a `call` tag to a chain outside the ring | not followed: the drain stops (CHCR.STR 0, D_STAT.CIS set, CHCR.ASP reads 1); nothing after the call is sent | not followed: the drain stops (CHCR.STR 0, D_STAT.CIS set, CHCR.ASP reads 2); the chain and what follows the call in the ring are not sent | `probe/p18_mfifo_call.c` |
 | The same with a `next` tag | not followed: the drain stops (STR 0, CIS set, ASP 0, TADR on the tag) | not followed: the drain holds at the tag (STR 1, TADR on it) | `probe/p18_mfifo_call.c` |
 | The same with a `ref` tag (the control) | followed, the ring drains | followed, the ring drains | `probe/p18_mfifo_call.c` |
+| `mx_fio_remove` of a `host:` file | ps2link removes it | the file is removed, but the answer is an error: PCSX2's host remove then lets the ROM's FILEIO answer too ("Unknown device 'host'") | maxsdk `tests/ps2/fio.c` |

@@ -28,6 +28,15 @@ int mx_sif_bind_tries(struct mx_sif_client *c, u32 sid, int n);
 int mx_sif_call(struct mx_sif_client *c, int fno, const void *send, u32 ssize, void *recv,
                 u32 rsize);
 
+/* An EE RPC server for an IOP module that calls back (e.g. audsrv): binds
+   to sid are answered, and each call runs fn(fno, arg) in the SIF interrupt
+   handler and is then answered. The data a call sends (up to
+   MX_SIF_SERVER_BUF bytes) is not kept; none goes back. Up to 4 servers.
+   Returns 0, < 0 when there is no room. */
+#define MX_SIF_SERVER_BUF 64
+typedef void (*mx_sif_server_fn)(int fno, void *arg);
+int mx_sif_serve(u32 sid, mx_sif_server_fn fn, void *arg);
+
 /* Load and start an IOP module (LOADFILE), e.g. "rom0:PADMAN". Returns its
    module id, < 0 on failure. */
 int mx_iop_load_module(const char *path);
@@ -58,5 +67,10 @@ int mx_fio_close(int fd);
 int mx_fio_dopen(const char *path);
 int mx_fio_dread(int fd, char *name, u32 room, u32 *size);
 int mx_fio_dclose(int fd);
+/* Remove a file, make a directory (mode: not used by the ROM's file server),
+   remove an empty one. */
+int mx_fio_remove(const char *path);
+int mx_fio_mkdir(const char *path, int mode);
+int mx_fio_rmdir(const char *path);
 
 #endif

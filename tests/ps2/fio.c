@@ -3,7 +3,7 @@
    odd address (the IOP sends the 16-byte aligned middle by DMA and the parts
    around it in a record), over the 64 KiB of one READ; the bytes around the
    buffer (but those of the last request after the end of the file) must keep
-   their values. */
+   their values. Then a directory made, a file in it, both removed. */
 
 #include <mx/sif.h>
 #include "t.h"
@@ -67,5 +67,32 @@ int main(void) {
       mx_printf("fio: guard byte %d after the data = %02x\n", (s32)i - 5 - SIZE, back[i]);
   CHECK_EQ(bad, 0);
   mx_printf("fio: %u bytes written and read back\n", SIZE);
+
+  /* mkdir, remove, rmdir (whether the directory was there before or not) */
+  mx_fio_remove("host:fio_test_dir/f.bin");
+  mx_fio_rmdir("host:fio_test_dir");
+  CHECK(mx_fio_mkdir("host:fio_test_dir", 0777) >= 0);
+  int dd = mx_fio_dopen("host:fio_test_dir");
+  CHECK(dd >= 0);
+  if (dd >= 0)
+    mx_fio_dclose(dd);
+  fd = mx_fio_open("host:fio_test_dir/f.bin", MX_FIO_WRONLY | MX_FIO_CREAT | MX_FIO_TRUNC);
+  CHECK(fd >= 0);
+  if (fd >= 0) {
+    CHECK_EQ(mx_fio_write(fd, data, 16), 0);
+    mx_fio_close(fd);
+  }
+  /* PCSX2 removes the file but answers with an error (docs/pcsx2.md): the
+     file is gone either way */
+  mx_fio_remove("host:fio_test_dir/f.bin");
+  fd = mx_fio_open("host:fio_test_dir/f.bin", MX_FIO_RDONLY);
+  CHECK(fd < 0);
+  if (fd >= 0)
+    mx_fio_close(fd);
+  CHECK(mx_fio_rmdir("host:fio_test_dir") >= 0);
+  dd = mx_fio_dopen("host:fio_test_dir");
+  CHECK(dd < 0);
+  if (dd >= 0)
+    mx_fio_dclose(dd);
   return t_done("fio");
 }
