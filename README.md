@@ -72,7 +72,7 @@ the PS2; the measurements are in `docs/`. maxsdk is built with clang only.
 | Path | |
 |---|---|
 | `include/mx/` | public headers; `hw/` is generated from `gen/hw_desc.py` |
-| `src/base/` | syscall stubs, startup, mini C runtime, printf, SIF tty client, cache ops |
+| `src/base/` | syscall stubs, startup, mini C runtime, printf, SIF client (tty, files, IOP modules), cache ops; IOP memory over SIF and the patches of the ROM modules, after ps2sdk's sbv (`<mx/iop.h>`, `iop.c`) |
 | `src/irq/`, `src/dma/` | interrupt dispatcher, DMA channels and the DMA engine |
 | `src/pkt/`, `src/gs/` | DMA/VIF/GIF packets, chains (`<mx/chain.h>`: built once, sent or called many times), GS setup and interrupts, the VIF packets of HLSL programs and their mesh chains (`shader.c`) |
 | `src/vu/` | VU control, kernels and streaming |

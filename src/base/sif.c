@@ -7,6 +7,7 @@
 #include <mx/cpu.h>
 #include <mx/hw/formats.h>
 #include <mx/hw/regs.h>
+#include <mx/iop.h>
 #include <mx/sif.h>
 #include <mx/string.h>
 
@@ -278,6 +279,75 @@ int mx_sif_call(struct mx_sif_client *c, int fno, const void *send, u32 ssize, v
   return wait_done(c);
 }
 
+/* ---- IOP memory ----------------------------------------------------------- */
+
+/* RDATA from the EE (sceSifGetOtherData): the IOP sends size bytes from src
+   by SIF DMA to dest and answers with an RPC_END (the client in word 7). The
+   reads are of 16-byte aligned blocks into rd_buf. */
+static struct mx_sif_client rdc;
+static u8 rd_buf[512] MX_ALIGNED(64);
+
+int mx_iop_read(u32 iop, void *dst, u32 size) {
+  if (!mx_sif_ready() && mx_sif_init() < 0)
+    return -1;
+  u8 *d = dst;
+  while (size) {
+    u32 base = iop & ~15u, off = iop - base;
+    u32 n = size < sizeof rd_buf - off ? size : sizeof rd_buf - off;
+    u32 len = (off + n + 15) & ~15u;
+    mx_dcache_writeback(rd_buf, sizeof rd_buf); /* no dirty lines for the DMA to meet */
+    mx_dcache_invalidate(rd_buf, sizeof rd_buf);
+    u8 *p = rpc_alloc();
+    volatile u32 *w = uw(p);
+    rdc.pkt = p;
+    rdc.done = 0;
+    w[7] = (u32)(uintptr_t)&rdc;
+    w[8] = base;
+    w[9] = (u32)(uintptr_t)rd_buf;
+    w[10] = len;
+    send_cmd(0, CMD_RPC_RDATA, p, RPC_PKT_SIZE, 0, 0, 0);
+    if (wait_done(&rdc) < 0)
+      return -1;
+    const volatile u8 *b = MX_UNCACHED(rd_buf);
+    for (u32 i = 0; i < n; i++)
+      d[i] = b[off + i];
+    d += n;
+    iop += n;
+    size -= n;
+  }
+  return 0;
+}
+
+int mx_iop_write(u32 iop, const void *src, u32 size) {
+  if ((iop | (u32)(uintptr_t)src | size) & 15)
+    return -1;
+  if (!mx_is_spr(src) && ((uintptr_t)src & 0xF0000000u) != 0x20000000u)
+    mx_dcache_writeback(src, size);
+  struct sif_dma t = {(u32)(uintptr_t)src, iop, (s32)size, 0};
+  mx_sync();
+  u32 id;
+  while (!(id = mx_bios_sif_set_dma(&t, 1)))
+    ;
+  while (mx_bios_sif_dma_stat(id) >= 0)
+    ;
+  return 0;
+}
+
+int mx_iop_write_word(u32 iop, u32 value) {
+  static u32 blk[4] MX_ALIGNED(64);
+  if (iop & 3)
+    return -1;
+  u32 base = iop & ~15u;
+  volatile u32 *b = MX_UNCACHED(blk);
+  u32 tmp[4];
+  if (mx_iop_read(base, tmp, 16) < 0)
+    return -1;
+  for (int i = 0; i < 4; i++)
+    b[i] = tmp[i];
+  b[(iop - base) / 4] = value;
+  return mx_iop_write(base, (const void *)b, 16);
+}
+
 /* ---- IOP modules ---------------------------------------------------------- */
 
 #define LOADFILE_SID 0x80000006
@@ -484,10 +554,17 @@ int mx_fio_close(int fd) {
 }
 
 /* DOPEN: the path (at a 16-byte boundary); DREAD: the IOP sends the entry
-   (io_dirent_t: its stat, 40 bytes, then the name) by SIF DMA to buf. */
+   (io_dirent_t: its stat, 40 bytes, then the name) by SIF DMA to buf. FILEIO
+   1.1's DREAD starts that DMA with interrupts on: patched before the first
+   DOPEN (mx_iop_patch_fileio). */
 int mx_fio_dopen(const char *path) {
   if (fio_bind() < 0)
     return -1;
+  static int patched;
+  if (!patched) {
+    patched = 1;
+    mx_iop_patch_fileio();
+  }
   static char dp_arg[256] MX_ALIGNED(64);
   char *a = MX_UNCACHED(dp_arg);
   u32 i = 0;

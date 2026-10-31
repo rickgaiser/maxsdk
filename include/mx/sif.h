@@ -3,7 +3,8 @@
 
 /* Minimal EE-side SIF command/RPC client. It talks to servers running on the
    IOP: ps2link's file server (tty output), LOADFILE (modules from rom0:) and
-   the pad driver. There is no IOP code in maxsdk. */
+   the pad driver. There is no IOP code in maxsdk. IOP memory and the patches
+   of its ROM modules: <mx/iop.h>. */
 
 #include <mx/types.h>
 
