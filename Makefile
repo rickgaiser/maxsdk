@@ -25,6 +25,16 @@ HDRS      = $(MX_HDRS)
 LIB_VSMS := $(wildcard $(HERE)/src/*/*.vsm)
 LIB_OBJS += $(patsubst %.vsm,$(OUT)/vu/%.o,$(notdir $(LIB_VSMS)))
 vpath %.vsm $(sort $(dir $(LIB_VSMS)))
+# IOP modules of ps2sdk that libmx loads (the sound driver, src/base/snd.c),
+# as data between the symbols <name>_irx and <name>_irx_end
+PS2SDK   ?= $(PS2MAX)/install/ps2sdk
+LIB_IRX  := libsd audsrv
+LIB_OBJS += $(patsubst %,$(OUT)/irx/%.o,$(LIB_IRX))
+$(OUT)/irx/%.o: $(PS2SDK)/iop/irx/%.irx
+	@mkdir -p $(dir $@)
+	printf '%s\n' '.section .rodata.$*_irx, "a"' '.balign 16' '.globl $*_irx' '$*_irx:' \
+	  '.incbin "$<"' '.globl $*_irx_end' '$*_irx_end:' > $(@:.o=.S)
+	$(CC) $(CFLAGS) -c $(@:.o=.S) -o $@
 # the VU0 renderer's feeder: its asm statements keep VF registers live
 $(OUT)/obj/src/vu/vu0r.c.o: CFLAGS += -mvu0 $(foreach r,$(shell seq 1 31),-ffixed-vf$(r))
 
